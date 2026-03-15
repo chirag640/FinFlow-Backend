@@ -76,18 +76,14 @@ export class AuthService {
             passwordHash,
             otpCode: hash,
             otpExpiresAt: expiresAt,
+            otpLastSentAt: null,
             updatedAt: now,
             deletedAt: null,
           },
         },
       );
 
-      this.sendVerificationEmail(email, displayName, code).catch((error) => {
-        this.logger.error(
-          `Background OTP send failed for ${email}`,
-          error instanceof Error ? error.stack : undefined,
-        );
-      });
+      this.sendVerificationEmailInBackground(existingEmail._id, email, displayName, code);
 
       return {
         requiresVerification: true,
@@ -121,15 +117,11 @@ export class AuthService {
       emailVerified: false,
       otpCode: hash,
       otpExpiresAt: expiresAt,
+      otpLastSentAt: null,
     };
     await this.db.users.insertOne(user);
 
-    this.sendVerificationEmail(email, displayName, code).catch((error) => {
-      this.logger.error(
-        `Background OTP send failed for ${email}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-    });
+    this.sendVerificationEmailInBackground(user._id, email, displayName, code);
 
     // Do NOT issue tokens until email is verified — tokens are returned by
     // verifyEmail() once the user proves ownership of their address.
@@ -173,20 +165,17 @@ export class AuthService {
           $set: {
             otpCode: hash,
             otpExpiresAt: expiresAt,
+            otpLastSentAt: null,
             updatedAt: new Date(),
           },
         },
       );
-      this.sendVerificationEmail(
+      this.sendVerificationEmailInBackground(
+        user._id,
         user.email,
         this.encryption.decrypt(user.name),
         code,
-      ).catch((error) => {
-        this.logger.error(
-          `Background OTP send failed for ${user.email}`,
-          error instanceof Error ? error.stack : undefined,
-        );
-      });
+      );
 
       throw new ForbiddenException({
         message: "Email not verified. A new OTP has been sent.",
@@ -241,26 +230,35 @@ export class AuthService {
     if (user.emailVerified)
       throw new BadRequestException("Email already verified");
 
-    if (user.otpExpiresAt) {
-      const sentAt = new Date(user.otpExpiresAt).getTime() - 10 * 60_000;
-      if (Date.now() - sentAt < 60_000) {
+    if (user.otpLastSentAt) {
+      const lastSentAt = new Date(user.otpLastSentAt).getTime();
+      const cooldownMs = this.otpResendCooldownMs();
+      const remainingMs = cooldownMs - (Date.now() - lastSentAt);
+      if (remainingMs > 0) {
+        const waitSec = Math.ceil(remainingMs / 1000);
         throw new BadRequestException(
-          "Wait a minute before requesting another code",
+          `Wait ${waitSec}s before requesting another code`,
         );
       }
     }
 
     const { code, hash, expiresAt } = await this.generateOtp();
-    await this.db.users.updateOne(
-      { _id: userId },
-      {
-        $set: { otpCode: hash, otpExpiresAt: expiresAt, updatedAt: new Date() },
-      },
-    );
     await this.sendVerificationEmail(
       user.email,
       this.encryption.decrypt(user.name),
       code,
+    );
+    const now = new Date();
+    await this.db.users.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          otpCode: hash,
+          otpExpiresAt: expiresAt,
+          otpLastSentAt: now,
+          updatedAt: now,
+        },
+      },
     );
   }
 
@@ -433,25 +431,8 @@ export class AuthService {
       );
     }
     const smtpReady = this.hasSmtpCredentials();
-    if (!smtpReady) {
-      const message = "SMTP is not configured. Unable to deliver OTP email.";
-      if (process.env.NODE_ENV === "production") {
-        this.logger.error(message);
-        throw new ServiceUnavailableException(
-          "Email service is unavailable. Please contact support.",
-        );
-      }
-      this.logger.warn(
-        `${message} Returning without sending email (non-production).`,
-      );
-      return;
-    }
-
-    try {
-      const payload = {
-        to,
-        subject: "FinFlow — Verify your email",
-        html: `
+    const subject = "FinFlow — Verify your email";
+    const html = `
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                     max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
                     border-radius:12px;">
@@ -474,8 +455,23 @@ export class AuthService {
             If you didn't create a FinFlow account, you can safely ignore this email.
           </p>
         </div>
-      `,
-      };
+      `;
+
+    if (!smtpReady) {
+      const message =
+        "SMTP is not configured. Unable to deliver OTP email.";
+      if (process.env.NODE_ENV === "production") {
+        this.logger.error(message);
+        throw new ServiceUnavailableException(
+          "Email service is unavailable. Please contact support.",
+        );
+      }
+      this.logger.warn(`${message} Returning without sending email (non-production).`);
+      return;
+    }
+
+    try {
+      const payload = { to, subject, html };
       await this.mailer.sendMail(payload);
     } catch (error) {
       this.logger.error(
@@ -484,31 +480,8 @@ export class AuthService {
       );
       const fallbackOk = await this.tryStartTlsFallback({
         to,
-        subject: "FinFlow — Verify your email",
-        html: `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-                    max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
-                    border-radius:12px;">
-          <h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0 0 8px;">
-            ₹ FinFlow
-          </h1>
-          <p style="font-size:16px;color:#64748b;margin:0 0 32px;">
-            Hi ${name}, thanks for signing up!
-          </p>
-          <p style="font-size:15px;color:#1e293b;margin:0 0 16px;">
-            Enter this code in the app to verify your email address:
-          </p>
-          <div style="background:#f1f5f9;border-radius:12px;padding:24px;
-                      text-align:center;margin-bottom:24px;">
-            <span style="font-size:40px;font-weight:800;letter-spacing:12px;
-                         color:#1B4FD8;font-family:monospace;">${code}</span>
-          </div>
-          <p style="font-size:13px;color:#94a3b8;margin:0;">
-            This code expires in <strong>10 minutes</strong>.
-            If you didn't create a FinFlow account, you can safely ignore this email.
-          </p>
-        </div>
-      `,
+        subject,
+        html,
       });
       if (fallbackOk) return;
       if (process.env.NODE_ENV === "production") {
@@ -530,6 +503,29 @@ export class AuthService {
       );
     }
     const smtpReady = this.hasSmtpCredentials();
+    const subject = "FinFlow — Reset your password";
+    const html = `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                    max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
+                    border-radius:12px;">
+          <h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0 0 8px;">
+            ₹ FinFlow
+          </h1>
+          <p style="font-size:16px;color:#64748b;margin:0 0 32px;">
+            Hi ${name}, use this code to reset your password.
+          </p>
+          <div style="background:#f1f5f9;border-radius:12px;padding:24px;
+                      text-align:center;margin-bottom:24px;">
+            <span style="font-size:40px;font-weight:800;letter-spacing:12px;
+                         color:#1B4FD8;font-family:monospace;">${code}</span>
+          </div>
+          <p style="font-size:13px;color:#94a3b8;margin:0;">
+            This code expires in <strong>10 minutes</strong>. If you didn't request a password reset,
+            you can safely ignore this email.
+          </p>
+        </div>
+      `;
+
     if (!smtpReady) {
       const message =
         "SMTP is not configured. Unable to deliver password reset email.";
@@ -539,38 +535,12 @@ export class AuthService {
           "Email service is unavailable. Please contact support.",
         );
       }
-      this.logger.warn(
-        `${message} Returning without sending email (non-production).`,
-      );
+      this.logger.warn(`${message} Returning without sending email (non-production).`);
       return;
     }
 
     try {
-      const payload = {
-        to,
-        subject: "FinFlow — Reset your password",
-        html: `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-                    max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
-                    border-radius:12px;">
-          <h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0 0 8px;">
-            ₹ FinFlow
-          </h1>
-          <p style="font-size:16px;color:#64748b;margin:0 0 32px;">
-            Hi ${name}, use this code to reset your password.
-          </p>
-          <div style="background:#f1f5f9;border-radius:12px;padding:24px;
-                      text-align:center;margin-bottom:24px;">
-            <span style="font-size:40px;font-weight:800;letter-spacing:12px;
-                         color:#1B4FD8;font-family:monospace;">${code}</span>
-          </div>
-          <p style="font-size:13px;color:#94a3b8;margin:0;">
-            This code expires in <strong>10 minutes</strong>. If you didn't request a password reset,
-            you can safely ignore this email.
-          </p>
-        </div>
-      `,
-      };
+      const payload = { to, subject, html };
       await this.mailer.sendMail(payload);
     } catch (error) {
       this.logger.error(
@@ -579,28 +549,8 @@ export class AuthService {
       );
       const fallbackOk = await this.tryStartTlsFallback({
         to,
-        subject: "FinFlow — Reset your password",
-        html: `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-                    max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
-                    border-radius:12px;">
-          <h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0 0 8px;">
-            ₹ FinFlow
-          </h1>
-          <p style="font-size:16px;color:#64748b;margin:0 0 32px;">
-            Hi ${name}, use this code to reset your password.
-          </p>
-          <div style="background:#f1f5f9;border-radius:12px;padding:24px;
-                      text-align:center;margin-bottom:24px;">
-            <span style="font-size:40px;font-weight:800;letter-spacing:12px;
-                         color:#1B4FD8;font-family:monospace;">${code}</span>
-          </div>
-          <p style="font-size:13px;color:#94a3b8;margin:0;">
-            This code expires in <strong>10 minutes</strong>. If you didn't request a password reset,
-            you can safely ignore this email.
-          </p>
-        </div>
-      `,
+        subject,
+        html,
       });
       if (fallbackOk) return;
       if (process.env.NODE_ENV === "production") {
@@ -660,6 +610,31 @@ export class AuthService {
       );
       return false;
     }
+  }
+
+  private otpResendCooldownMs(): number {
+    return Number(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? 60) * 1000;
+  }
+
+  private sendVerificationEmailInBackground(
+    userId: string,
+    email: string,
+    name: string,
+    code: string,
+  ): void {
+    this.sendVerificationEmail(email, name, code)
+      .then(async () => {
+        await this.db.users.updateOne(
+          { _id: userId },
+          { $set: { otpLastSentAt: new Date(), updatedAt: new Date() } },
+        );
+      })
+      .catch((error) => {
+        this.logger.error(
+          `Background OTP send failed for ${email}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      });
   }
 
   private async issueTokens(

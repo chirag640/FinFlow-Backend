@@ -23,6 +23,7 @@ export interface UserDoc {
   emailVerified: boolean;
   otpCode?: string | null;
   otpExpiresAt?: Date | null;
+  otpLastSentAt?: Date | null;
   passwordResetCode?: string | null;
   passwordResetExpiresAt?: Date | null;
   pinHash?: string | null; // SHA-256 of the user's 4-digit PIN; null = no PIN set
