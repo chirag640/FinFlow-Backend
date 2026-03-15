@@ -15,13 +15,19 @@ import {
 dotenvConfig({ path: join(__dirname, "..", ".env") });
 
 async function bootstrap() {
+  const port = Number(process.env.PORT) || 3000;
+
   const app = await NestFactory.create(AppModule, {
     logger: ["error", "warn", "log"],
   });
 
   // Security
   app.use(helmet());
-  app.use(cookieParser());
+  app.use(
+    cookieParser.default
+      ? (cookieParser as any).default()
+      : (cookieParser as any)(),
+  );
   app.use(requestContextMiddleware);
   app.use(idempotencyMiddleware);
 
@@ -67,15 +73,12 @@ async function bootstrap() {
     SwaggerModule.setup("api/docs", app, doc, {
       swaggerOptions: { persistAuthorization: true },
     });
-    console.log(
-      `📚  Swagger      →  http://localhost:${process.env.PORT ?? 3000}/api/docs`,
-    );
+    console.log(`📚  Swagger      →  http://localhost:${port}/api/docs`);
   }
 
   // Enable graceful shutdown — triggers OnModuleDestroy (e.g. DB close) on SIGTERM
   app.enableShutdownHooks();
 
-  const port = process.env.PORT ?? 3000;
   // Listen on all interfaces so Docker port-mapping works
   await app.listen(port, "0.0.0.0");
   console.log(`🚀  FinFlow API  →  http://localhost:${port}/api/v1`);

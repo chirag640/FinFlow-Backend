@@ -11,6 +11,7 @@ import { GroupsModule } from "./modules/groups/groups.module";
 import { BudgetsModule } from "./modules/budgets/budgets.module";
 import { SyncModule } from "./modules/sync/sync.module";
 import { InvestmentsModule } from "./modules/investments/investments.module";
+import { HealthModule } from "./modules/health/health.module";
 import { EncryptionModule } from "./common/services/encryption.module";
 
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
@@ -34,6 +35,7 @@ import { TransformInterceptor } from "./common/interceptors/transform.intercepto
     BudgetsModule,
     SyncModule,
     InvestmentsModule,
+    HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
