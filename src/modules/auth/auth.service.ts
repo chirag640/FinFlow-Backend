@@ -9,7 +9,6 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
-import { MailerService } from "@nestjs-modules/mailer";
 import { randomUUID, randomInt } from "crypto";
 import { resolve4 } from "dns/promises";
 import * as bcrypt from "bcrypt";
@@ -42,7 +41,6 @@ export class AuthService {
   constructor(
     private db: DatabaseService,
     private jwtService: JwtService,
-    private mailer: MailerService,
     private encryption: EncryptionService,
   ) {}
 
@@ -589,10 +587,42 @@ export class AuthService {
   ): Promise<void> {
     const from = this.resolveFromAddress();
     const maxAttempts = Number(process.env.SMTP_SEND_RETRIES ?? 2);
+    const smtpHost = process.env.SMTP_HOST ?? "smtp.gmail.com";
+    const port = Number(process.env.SMTP_PORT ?? 587);
+    const secure = (process.env.SMTP_SECURE ?? "false") === "true";
+    const user = process.env.SMTP_USER?.trim();
+    const pass = process.env.SMTP_PASS?.trim();
+
+    if (!user || !pass) {
+      throw new ServiceUnavailableException(
+        "Email service is unavailable. Please contact support.",
+      );
+    }
+
+    const { host, tlsServerName } = await this.resolveSmtpConnectHost(smtpHost);
+    const connectionTimeout = Number(
+      process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
+    );
+    const greetingTimeout = Number(
+      process.env.SMTP_GREETING_TIMEOUT_MS ?? 10_000,
+    );
+    const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await this.mailer.sendMail({ ...payload, from });
+        const transportOptions: SMTPTransport.Options = {
+          host,
+          port,
+          secure,
+          tls: tlsServerName ? { servername: tlsServerName } : undefined,
+          connectionTimeout,
+          greetingTimeout,
+          socketTimeout,
+          auth: { user, pass },
+        };
+        const transporter = nodemailer.createTransport(transportOptions);
+        await transporter.sendMail({ ...payload, from });
+        await transporter.close();
         if (attempt > 1) {
           this.logger.log(
             `Email (${purpose}) delivered on retry ${attempt} to ${payload.to}`,
