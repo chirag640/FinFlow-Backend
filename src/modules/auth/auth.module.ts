@@ -21,6 +21,8 @@ import { EncryptionService } from "../../common/services/encryption.service";
                 host: process.env.SMTP_HOST ?? "smtp.gmail.com",
                 port: Number(process.env.SMTP_PORT ?? 465),
                 secure: (process.env.SMTP_SECURE ?? "true") === "true",
+                family: Number(process.env.SMTP_FAMILY ?? 4),
+                dnsTimeout: Number(process.env.SMTP_DNS_TIMEOUT_MS ?? 10_000),
                 connectionTimeout: Number(
                   process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
                 ),

@@ -1,5 +1,6 @@
 import { config as dotenvConfig } from "dotenv";
 import { join } from "path";
+import { setDefaultResultOrder } from "dns";
 import { NestFactory } from "@nestjs/core";
 import { ValidationPipe, VersioningType } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
@@ -13,6 +14,10 @@ import {
 
 // Load .env using __dirname — works regardless of process CWD
 dotenvConfig({ path: join(__dirname, "..", ".env") });
+
+// Render and similar hosts may not have outbound IPv6 routes.
+// Prefer IPv4 first for all DNS lookups in this process.
+setDefaultResultOrder("ipv4first");
 
 async function bootstrap() {
   const port = Number(process.env.PORT) || 3000;
