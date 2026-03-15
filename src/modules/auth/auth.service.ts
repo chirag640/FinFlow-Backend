@@ -41,25 +41,70 @@ export class AuthService {
   async register(
     dto: RegisterDto,
   ): Promise<{ requiresVerification: true; user: AuthUserDto }> {
+    const email = dto.email.trim().toLowerCase();
+    const username = dto.username.trim().toLowerCase();
+
     const [existingEmail, existingUsername] = await Promise.all([
-      this.db.users.findOne({ email: dto.email }),
-      this.db.users.findOne({ username: dto.username }),
+      this.db.users.findOne({ email }),
+      this.db.users.findOne({ username }),
     ]);
-    if (existingEmail) throw new ConflictException("Email already in use");
-    if (existingUsername) throw new ConflictException("Username already taken");
+    if (existingEmail?.emailVerified) {
+      throw new ConflictException("Email already in use");
+    }
+
+    if (existingUsername && existingUsername._id !== existingEmail?._id) {
+      throw new ConflictException("Username already taken");
+    }
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    const displayName = dto.name ?? dto.email.split("@")[0];
+    const displayName = dto.name?.trim() || email.split("@")[0];
     const { code, hash, expiresAt } = await this.generateOtp();
 
     const now = new Date();
+
+    if (existingEmail && !existingEmail.emailVerified) {
+      await this.db.users.updateOne(
+        { _id: existingEmail._id },
+        {
+          $set: {
+            email,
+            username,
+            usernameUpdatedAt: now,
+            name: this.encryption.encrypt(displayName),
+            passwordHash,
+            otpCode: hash,
+            otpExpiresAt: expiresAt,
+            updatedAt: now,
+            deletedAt: null,
+          },
+        },
+      );
+
+      await this.sendVerificationEmail(email, displayName, code);
+
+      return {
+        requiresVerification: true,
+        user: {
+          id: existingEmail._id,
+          email,
+          username,
+          name: displayName,
+          avatarUrl: existingEmail.avatarUrl ?? null,
+          role: existingEmail.role,
+          currency: existingEmail.currency,
+          emailVerified: false,
+          monthlyBudget: existingEmail.monthlyBudget ?? 0,
+        },
+      };
+    }
+
     const user: UserDoc = {
       _id: randomUUID(),
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
-      email: dto.email,
-      username: dto.username,
+      email,
+      username,
       usernameUpdatedAt: now,
       name: this.encryption.encrypt(displayName),
       passwordHash,
