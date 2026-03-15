@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
@@ -71,7 +72,7 @@ export class AuthService {
     };
     await this.db.users.insertOne(user);
 
-    this.sendVerificationEmail(dto.email, displayName, code).catch(() => {});
+    await this.sendVerificationEmail(dto.email, displayName, code);
 
     // Do NOT issue tokens until email is verified — tokens are returned by
     // verifyEmail() once the user proves ownership of their address.
@@ -119,11 +120,11 @@ export class AuthService {
           },
         },
       );
-      this.sendVerificationEmail(
+      await this.sendVerificationEmail(
         user.email,
         this.encryption.decrypt(user.name),
         code,
-      ).catch(() => {});
+      );
 
       throw new ForbiddenException({
         message: "Email not verified. A new OTP has been sent.",
@@ -369,13 +370,26 @@ export class AuthService {
         `\n${"─".repeat(50)}\n📧  OTP for ${to}  →  ${code}\n${"─".repeat(50)}`,
       );
     }
-    // Skip actual email send if SMTP is not configured (dev without mail setup)
-    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return;
+    const smtpReady = this.hasSmtpCredentials();
+    if (!smtpReady) {
+      const message = "SMTP is not configured. Unable to deliver OTP email.";
+      if (process.env.NODE_ENV === "production") {
+        this.logger.error(message);
+        throw new ServiceUnavailableException(
+          "Email service is unavailable. Please contact support.",
+        );
+      }
+      this.logger.warn(
+        `${message} Returning without sending email (non-production).`,
+      );
+      return;
+    }
 
-    await this.mailer.sendMail({
-      to,
-      subject: "FinFlow — Verify your email",
-      html: `
+    try {
+      await this.mailer.sendMail({
+        to,
+        subject: "FinFlow — Verify your email",
+        html: `
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                     max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
                     border-radius:12px;">
@@ -399,7 +413,18 @@ export class AuthService {
           </p>
         </div>
       `,
-    });
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send verification OTP email to ${to}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      if (process.env.NODE_ENV === "production") {
+        throw new ServiceUnavailableException(
+          "Email service is temporarily unavailable. Please try again.",
+        );
+      }
+    }
   }
 
   private async sendPasswordResetEmail(
@@ -412,12 +437,27 @@ export class AuthService {
         `\n${"─".repeat(50)}\n🔐  RESET OTP for ${to}  →  ${code}\n${"─".repeat(50)}`,
       );
     }
-    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return;
+    const smtpReady = this.hasSmtpCredentials();
+    if (!smtpReady) {
+      const message =
+        "SMTP is not configured. Unable to deliver password reset email.";
+      if (process.env.NODE_ENV === "production") {
+        this.logger.error(message);
+        throw new ServiceUnavailableException(
+          "Email service is unavailable. Please contact support.",
+        );
+      }
+      this.logger.warn(
+        `${message} Returning without sending email (non-production).`,
+      );
+      return;
+    }
 
-    await this.mailer.sendMail({
-      to,
-      subject: "FinFlow — Reset your password",
-      html: `
+    try {
+      await this.mailer.sendMail({
+        to,
+        subject: "FinFlow — Reset your password",
+        html: `
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                     max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
                     border-radius:12px;">
@@ -438,7 +478,24 @@ export class AuthService {
           </p>
         </div>
       `,
-    });
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send password reset email to ${to}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      if (process.env.NODE_ENV === "production") {
+        throw new ServiceUnavailableException(
+          "Email service is temporarily unavailable. Please try again.",
+        );
+      }
+    }
+  }
+
+  private hasSmtpCredentials(): boolean {
+    const user = process.env.SMTP_USER?.trim();
+    const pass = process.env.SMTP_PASS?.trim();
+    return Boolean(user && pass);
   }
 
   private async issueTokens(
@@ -528,6 +585,19 @@ export class AuthService {
     if (!userAgent) return null;
     const ua = userAgent.toLowerCase();
 
+    if (ua.includes("dart/") || ua.includes("flutter")) {
+      if (ua.includes("android")) return "Flutter App on Android";
+      if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) {
+        return "Flutter App on iOS";
+      }
+      if (ua.includes("windows")) return "Flutter App on Windows";
+      if (ua.includes("mac os") || ua.includes("macintosh")) {
+        return "Flutter App on macOS";
+      }
+      if (ua.includes("linux")) return "Flutter App on Linux";
+      return "Flutter App";
+    }
+
     const os = ua.includes("windows")
       ? "Windows"
       : ua.includes("android")
@@ -542,13 +612,21 @@ export class AuthService {
 
     const browser = ua.includes("edg/")
       ? "Edge"
-      : ua.includes("chrome/")
-        ? "Chrome"
-        : ua.includes("firefox/")
-          ? "Firefox"
-          : ua.includes("safari/") && !ua.includes("chrome/")
-            ? "Safari"
-            : "Unknown Browser";
+      : ua.includes("opr/") || ua.includes("opera")
+        ? "Opera"
+        : ua.includes("samsungbrowser/")
+          ? "Samsung Internet"
+          : ua.includes("chrome/")
+            ? "Chrome"
+            : ua.includes("crios/")
+              ? "Chrome"
+              : ua.includes("firefox/")
+                ? "Firefox"
+                : ua.includes("fxios/")
+                  ? "Firefox"
+                  : ua.includes("safari/") && !ua.includes("chrome/")
+                    ? "Safari"
+                    : "Unknown Browser";
 
     return `${browser} on ${os}`;
   }

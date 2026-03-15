@@ -21,6 +21,23 @@ async function bootstrap() {
     logger: ["error", "warn", "log"],
   });
 
+  // Render and external probes often call GET/HEAD / without API prefix.
+  // Keep these endpoints lightweight and outside global prefix/versioning.
+  const rawApp = app.getHttpAdapter().getInstance();
+  rawApp.get("/", (_req: any, res: any) => {
+    res.status(200).json({
+      service: "FinFlow API",
+      status: "ok",
+      health: "/api/v1/health",
+      docs: process.env.NODE_ENV !== "production" ? "/api/docs" : null,
+    });
+  });
+  rawApp.head("/", (_req: any, res: any) => res.status(200).end());
+  rawApp.get("/health", (_req: any, res: any) =>
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() }),
+  );
+  rawApp.head("/health", (_req: any, res: any) => res.status(200).end());
+
   // Security
   app.use(helmet());
   app.use(

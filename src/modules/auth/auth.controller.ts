@@ -189,9 +189,11 @@ export class AuthController {
     const forwarded = req.header("x-forwarded-for")?.split(",")[0]?.trim();
     const ip = forwarded || req.ip || req.socket.remoteAddress || null;
     const userAgent = req.header("user-agent") ?? null;
+    const deviceName = req.header("x-device-name")?.trim() || null;
     return {
       ipAddress: ip,
       userAgent,
+      deviceName,
     };
   }
 }
