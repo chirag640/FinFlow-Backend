@@ -83,7 +83,12 @@ export class AuthService {
         },
       );
 
-      this.sendVerificationEmailInBackground(existingEmail._id, email, displayName, code);
+      this.sendVerificationEmailInBackground(
+        existingEmail._id,
+        email,
+        displayName,
+        code,
+      );
 
       return {
         requiresVerification: true,
@@ -458,15 +463,16 @@ export class AuthService {
       `;
 
     if (!smtpReady) {
-      const message =
-        "SMTP is not configured. Unable to deliver OTP email.";
+      const message = "SMTP is not configured. Unable to deliver OTP email.";
       if (process.env.NODE_ENV === "production") {
         this.logger.error(message);
         throw new ServiceUnavailableException(
           "Email service is unavailable. Please contact support.",
         );
       }
-      this.logger.warn(`${message} Returning without sending email (non-production).`);
+      this.logger.warn(
+        `${message} Returning without sending email (non-production).`,
+      );
       return;
     }
 
@@ -535,7 +541,9 @@ export class AuthService {
           "Email service is unavailable. Please contact support.",
         );
       }
-      this.logger.warn(`${message} Returning without sending email (non-production).`);
+      this.logger.warn(
+        `${message} Returning without sending email (non-production).`,
+      );
       return;
     }
 
