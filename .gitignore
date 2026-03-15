@@ -1,0 +1,47 @@
+# Compiled output
+/dist
+/node_modules
+
+# Build info files
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Environment variables (Crucial!)
+.env
+.env.production
+.env.staging
+.env.development
+.env.local
+
+# Testing
+/coverage
+/test-results
+
+# Databases / Docker Data
+/data
+*.db
+*.sqlite
+
+# System files
+.DS_Store

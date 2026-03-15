@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7-jammy
+    container_name: finflow_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-finflow}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD env var is required}
+      MONGO_INITDB_DATABASE: finflow_db
+    # Port intentionally NOT mapped to the host in production.
+    # The app container connects via Docker's internal network only.
+    # Uncomment the line below only for local development:
+    # ports:
+    #   - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # Optional: Mongo Express UI  →  http://localhost:8081
+  # ⚠ DEVELOPMENT ONLY — disable or remove in production deployments
+  mongo-express:
+    image: mongo-express:latest
+    container_name: finflow_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USER:-finflow}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD env var is required}
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER:-finflow}:${MONGO_PASSWORD}@mongo:27017/
+      # Require HTTP basic-auth before accessing the Mongo Express UI
+      ME_CONFIG_BASICAUTH: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${ME_USERNAME:?ME_USERNAME env var is required}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${ME_PASSWORD:?ME_PASSWORD env var is required}
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:
