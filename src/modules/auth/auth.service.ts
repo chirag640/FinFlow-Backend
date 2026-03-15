@@ -28,6 +28,12 @@ type SessionMeta = {
   deviceName?: string | null;
 };
 
+type OutboundEmailPayload = {
+  to: string;
+  subject: string;
+  html: string;
+};
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -83,7 +89,7 @@ export class AuthService {
         },
       );
 
-      this.sendVerificationEmailInBackground(
+      await this.sendVerificationEmailAndMarkSent(
         existingEmail._id,
         email,
         displayName,
@@ -126,7 +132,12 @@ export class AuthService {
     };
     await this.db.users.insertOne(user);
 
-    this.sendVerificationEmailInBackground(user._id, email, displayName, code);
+    await this.sendVerificationEmailAndMarkSent(
+      user._id,
+      email,
+      displayName,
+      code,
+    );
 
     // Do NOT issue tokens until email is verified — tokens are returned by
     // verifyEmail() once the user proves ownership of their address.
@@ -175,7 +186,7 @@ export class AuthService {
           },
         },
       );
-      this.sendVerificationEmailInBackground(
+      await this.sendVerificationEmailAndMarkSent(
         user._id,
         user.email,
         this.encryption.decrypt(user.name),
@@ -476,26 +487,7 @@ export class AuthService {
       return;
     }
 
-    try {
-      const payload = { to, subject, html };
-      await this.mailer.sendMail(payload);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send verification OTP email to ${to}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      const fallbackOk = await this.tryStartTlsFallback({
-        to,
-        subject,
-        html,
-      });
-      if (fallbackOk) return;
-      if (process.env.NODE_ENV === "production") {
-        throw new ServiceUnavailableException(
-          "Email service is temporarily unavailable. Please try again.",
-        );
-      }
-    }
+    await this.sendEmailWithRetries({ to, subject, html }, "verification OTP");
   }
 
   private async sendPasswordResetEmail(
@@ -547,25 +539,47 @@ export class AuthService {
       return;
     }
 
-    try {
-      const payload = { to, subject, html };
-      await this.mailer.sendMail(payload);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send password reset email to ${to}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      const fallbackOk = await this.tryStartTlsFallback({
-        to,
-        subject,
-        html,
-      });
-      if (fallbackOk) return;
-      if (process.env.NODE_ENV === "production") {
-        throw new ServiceUnavailableException(
-          "Email service is temporarily unavailable. Please try again.",
+    await this.sendEmailWithRetries({ to, subject, html }, "password reset");
+  }
+
+  private async sendEmailWithRetries(
+    payload: OutboundEmailPayload,
+    purpose: string,
+  ): Promise<void> {
+    const from = this.resolveFromAddress();
+    const maxAttempts = Number(process.env.SMTP_SEND_RETRIES ?? 2);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.mailer.sendMail({ ...payload, from });
+        if (attempt > 1) {
+          this.logger.log(
+            `Email (${purpose}) delivered on retry ${attempt} to ${payload.to}`,
+          );
+        }
+        return;
+      } catch (error) {
+        this.logger.error(
+          `Primary SMTP attempt ${attempt}/${maxAttempts} failed for ${payload.to}`,
+          error instanceof Error ? error.stack : undefined,
         );
+
+        const fallbackOk = await this.tryStartTlsFallback({
+          ...payload,
+          from,
+        });
+        if (fallbackOk) return;
+
+        if (attempt < maxAttempts) {
+          await this.delay(Number(process.env.SMTP_RETRY_DELAY_MS ?? 1500));
+        }
       }
+    }
+
+    if (process.env.NODE_ENV === "production") {
+      throw new ServiceUnavailableException(
+        "Email service is temporarily unavailable. Please try again.",
+      );
     }
   }
 
@@ -579,6 +593,7 @@ export class AuthService {
     to: string;
     subject: string;
     html: string;
+    from?: string;
   }): Promise<boolean> {
     try {
       const host = process.env.SMTP_HOST ?? "smtp.gmail.com";
@@ -601,9 +616,7 @@ export class AuthService {
       const transporter = nodemailer.createTransport(fallbackTransport);
 
       await transporter.sendMail({
-        from:
-          process.env.EMAIL_FROM ??
-          `"FinFlow" <${process.env.SMTP_USER ?? "noreply@finflow.app"}>`,
+        from: payload.from ?? this.resolveFromAddress(),
         ...payload,
       });
       await transporter.close();
@@ -624,25 +637,45 @@ export class AuthService {
     return Number(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? 60) * 1000;
   }
 
-  private sendVerificationEmailInBackground(
+  private resolveFromAddress(): string {
+    const smtpUser = process.env.SMTP_USER?.trim();
+    const configuredFrom = process.env.EMAIL_FROM?.trim();
+
+    if (!smtpUser) {
+      return configuredFrom ?? '"FinFlow" <noreply@finflow.app>';
+    }
+
+    // Gmail is strict about sender identity. Keep From aligned with authenticated account.
+    if (smtpUser.endsWith("@gmail.com")) {
+      if (
+        configuredFrom &&
+        !configuredFrom.toLowerCase().includes(smtpUser.toLowerCase())
+      ) {
+        this.logger.warn(
+          "EMAIL_FROM does not match SMTP_USER; using authenticated Gmail address for better deliverability.",
+        );
+      }
+      return `"FinFlow" <${smtpUser}>`;
+    }
+
+    return configuredFrom ?? `"FinFlow" <${smtpUser}>`;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async sendVerificationEmailAndMarkSent(
     userId: string,
     email: string,
     name: string,
     code: string,
-  ): void {
-    this.sendVerificationEmail(email, name, code)
-      .then(async () => {
-        await this.db.users.updateOne(
-          { _id: userId },
-          { $set: { otpLastSentAt: new Date(), updatedAt: new Date() } },
-        );
-      })
-      .catch((error) => {
-        this.logger.error(
-          `Background OTP send failed for ${email}`,
-          error instanceof Error ? error.stack : undefined,
-        );
-      });
+  ): Promise<void> {
+    await this.sendVerificationEmail(email, name, code);
+    await this.db.users.updateOne(
+      { _id: userId },
+      { $set: { otpLastSentAt: new Date(), updatedAt: new Date() } },
+    );
   }
 
   private async issueTokens(
