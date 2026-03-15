@@ -12,6 +12,8 @@ import { JwtService } from "@nestjs/jwt";
 import { MailerService } from "@nestjs-modules/mailer";
 import { randomUUID, randomInt } from "crypto";
 import * as bcrypt from "bcrypt";
+import * as nodemailer from "nodemailer";
+import SMTPTransport from "nodemailer/lib/smtp-transport";
 import { DatabaseService } from "../../database/database.service";
 import { EncryptionService } from "../../common/services/encryption.service";
 import { RefreshTokenDoc, UserDoc } from "../../database/database.types";
@@ -446,7 +448,41 @@ export class AuthService {
     }
 
     try {
-      await this.mailer.sendMail({
+      const payload = {
+        to,
+        subject: "FinFlow — Verify your email",
+        html: `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                    max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
+                    border-radius:12px;">
+          <h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0 0 8px;">
+            ₹ FinFlow
+          </h1>
+          <p style="font-size:16px;color:#64748b;margin:0 0 32px;">
+            Hi ${name}, thanks for signing up!
+          </p>
+          <p style="font-size:15px;color:#1e293b;margin:0 0 16px;">
+            Enter this code in the app to verify your email address:
+          </p>
+          <div style="background:#f1f5f9;border-radius:12px;padding:24px;
+                      text-align:center;margin-bottom:24px;">
+            <span style="font-size:40px;font-weight:800;letter-spacing:12px;
+                         color:#1B4FD8;font-family:monospace;">${code}</span>
+          </div>
+          <p style="font-size:13px;color:#94a3b8;margin:0;">
+            This code expires in <strong>10 minutes</strong>.
+            If you didn't create a FinFlow account, you can safely ignore this email.
+          </p>
+        </div>
+      `,
+      };
+      await this.mailer.sendMail(payload);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send verification OTP email to ${to}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      const fallbackOk = await this.tryStartTlsFallback({
         to,
         subject: "FinFlow — Verify your email",
         html: `
@@ -474,11 +510,7 @@ export class AuthService {
         </div>
       `,
       });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send verification OTP email to ${to}`,
-        error instanceof Error ? error.stack : undefined,
-      );
+      if (fallbackOk) return;
       if (process.env.NODE_ENV === "production") {
         throw new ServiceUnavailableException(
           "Email service is temporarily unavailable. Please try again.",
@@ -514,7 +546,38 @@ export class AuthService {
     }
 
     try {
-      await this.mailer.sendMail({
+      const payload = {
+        to,
+        subject: "FinFlow — Reset your password",
+        html: `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                    max-width:480px;margin:0 auto;padding:40px 24px;background:#ffffff;
+                    border-radius:12px;">
+          <h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0 0 8px;">
+            ₹ FinFlow
+          </h1>
+          <p style="font-size:16px;color:#64748b;margin:0 0 32px;">
+            Hi ${name}, use this code to reset your password.
+          </p>
+          <div style="background:#f1f5f9;border-radius:12px;padding:24px;
+                      text-align:center;margin-bottom:24px;">
+            <span style="font-size:40px;font-weight:800;letter-spacing:12px;
+                         color:#1B4FD8;font-family:monospace;">${code}</span>
+          </div>
+          <p style="font-size:13px;color:#94a3b8;margin:0;">
+            This code expires in <strong>10 minutes</strong>. If you didn't request a password reset,
+            you can safely ignore this email.
+          </p>
+        </div>
+      `,
+      };
+      await this.mailer.sendMail(payload);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send password reset email to ${to}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      const fallbackOk = await this.tryStartTlsFallback({
         to,
         subject: "FinFlow — Reset your password",
         html: `
@@ -539,11 +602,7 @@ export class AuthService {
         </div>
       `,
       });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send password reset email to ${to}`,
-        error instanceof Error ? error.stack : undefined,
-      );
+      if (fallbackOk) return;
       if (process.env.NODE_ENV === "production") {
         throw new ServiceUnavailableException(
           "Email service is temporarily unavailable. Please try again.",
@@ -556,6 +615,51 @@ export class AuthService {
     const user = process.env.SMTP_USER?.trim();
     const pass = process.env.SMTP_PASS?.trim();
     return Boolean(user && pass);
+  }
+
+  private async tryStartTlsFallback(payload: {
+    to: string;
+    subject: string;
+    html: string;
+  }): Promise<boolean> {
+    try {
+      const host = process.env.SMTP_HOST ?? "smtp.gmail.com";
+      const user = process.env.SMTP_USER?.trim();
+      const pass = process.env.SMTP_PASS?.trim();
+      if (!user || !pass) return false;
+
+      const fallbackTransport: SMTPTransport.Options = {
+        host,
+        port: Number(process.env.SMTP_FALLBACK_PORT ?? 587),
+        secure: false,
+        requireTLS: true,
+        connectionTimeout: Number(
+          process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
+        ),
+        greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS ?? 10_000),
+        socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000),
+        auth: { user, pass },
+      };
+      const transporter = nodemailer.createTransport(fallbackTransport);
+
+      await transporter.sendMail({
+        from:
+          process.env.EMAIL_FROM ??
+          `"FinFlow" <${process.env.SMTP_USER ?? "noreply@finflow.app"}>`,
+        ...payload,
+      });
+      await transporter.close();
+      this.logger.log(
+        `OTP email delivered via STARTTLS fallback to ${payload.to}`,
+      );
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `SMTP STARTTLS fallback failed for ${payload.to}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      return false;
+    }
   }
 
   private async issueTokens(
