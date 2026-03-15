@@ -4,13 +4,14 @@ import { setDefaultResultOrder } from "dns";
 import { NestFactory } from "@nestjs/core";
 import { ValidationPipe, VersioningType } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
-import * as cookieParser from "cookie-parser";
+import cookieParser = require("cookie-parser");
 import helmet from "helmet";
 import { AppModule } from "./app.module";
 import {
   idempotencyMiddleware,
   requestContextMiddleware,
 } from "./common/middleware/request-context.middleware";
+import { httpLoggingMiddleware } from "./common/middleware/http-logging.middleware";
 
 // Load .env using __dirname — works regardless of process CWD
 dotenvConfig({ path: join(__dirname, "..", ".env") });
@@ -45,12 +46,9 @@ async function bootstrap() {
 
   // Security
   app.use(helmet());
-  app.use(
-    cookieParser.default
-      ? (cookieParser as any).default()
-      : (cookieParser as any)(),
-  );
+  app.use(cookieParser());
   app.use(requestContextMiddleware);
+  app.use(httpLoggingMiddleware);
   app.use(idempotencyMiddleware);
 
   // CORS — allow Flutter web + mobile dev proxy

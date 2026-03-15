@@ -53,8 +53,8 @@ export class AuthService {
     const username = dto.username.trim().toLowerCase();
 
     const [existingEmail, existingUsername] = await Promise.all([
-      this.db.users.findOne({ email }),
-      this.db.users.findOne({ username }),
+      this.db.users.findOne({ email, deletedAt: null }),
+      this.db.users.findOne({ username, deletedAt: null }),
     ]);
     if (existingEmail?.emailVerified) {
       throw new ConflictException("Email already in use");

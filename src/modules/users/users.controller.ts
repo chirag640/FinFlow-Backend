@@ -14,25 +14,24 @@ import {
   ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
-import {
-  IsHexadecimal,
-  IsOptional,
-  IsString,
-  Length,
-  ValidateIf,
-} from "class-validator";
+import { IsOptional, Matches, IsString, ValidateIf } from "class-validator";
 import { UsersService } from "./users.service";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 class UpdatePinDto {
-  /** SHA-256 hex hash of the PIN, or null to remove the PIN entirely. */
+  /**
+   * PIN hash payload, or null to remove the PIN entirely.
+   * Accepts:
+   * - Legacy unsalted format: 64-char SHA-256 hex
+   * - Current salted format: 32-char hex salt + ':' + 64-char SHA-256 hex
+   */
   @IsOptional()
   @ValidateIf((o) => o.pinHash !== null)
   @IsString()
-  @IsHexadecimal()
-  @Length(64, 64, {
-    message: "pinHash must be a 64-character SHA-256 hex string",
+  @Matches(/^(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{32}:[a-fA-F0-9]{64})$/, {
+    message:
+      "pinHash must be 64-char SHA-256 hex or salted format (32-char hex salt:64-char hex hash)",
   })
   pinHash: string | null;
 }
@@ -64,7 +63,7 @@ export class UsersController {
 
   @Patch("pin")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: "Set or update app PIN hash (SHA-256)" })
+  @ApiOperation({ summary: "Set or update app PIN hash (legacy or salted)" })
   updatePin(@CurrentUser("id") userId: string, @Body() dto: UpdatePinDto) {
     return this.usersService.updatePin(userId, dto.pinHash);
   }

@@ -67,11 +67,36 @@ export class UsersService {
   }
 
   async deleteAccount(id: string) {
+    const now = new Date();
+    const suffix = `${id}_${now.getTime()}`
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    const tombstoneEmail = `deleted+${suffix}@finflow.local`;
+    const tombstoneUsername = `deleted_${suffix}`;
+
     await this.db.refreshTokens.deleteMany({ userId: id });
-    await this.db.users.updateOne(
-      { _id: id },
-      { $set: { deletedAt: new Date(), updatedAt: new Date() } },
+    const result = await this.db.users.updateOne(
+      { _id: id, deletedAt: null },
+      {
+        $set: {
+          deletedAt: now,
+          updatedAt: now,
+          email: tombstoneEmail,
+          username: tombstoneUsername,
+          emailVerified: false,
+          otpCode: null,
+          otpExpiresAt: null,
+          otpLastSentAt: null,
+          passwordResetCode: null,
+          passwordResetExpiresAt: null,
+          pinHash: null,
+        },
+      },
     );
+
+    if (result.matchedCount === 0) {
+      throw new NotFoundException("User not found or already deleted");
+    }
   }
 
   async searchByUsername(query: string) {
