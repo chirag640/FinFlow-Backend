@@ -71,6 +71,18 @@ export class AuthService {
     const now = new Date();
 
     if (existingEmail && !existingEmail.emailVerified) {
+      const previous = {
+        email: existingEmail.email,
+        username: existingEmail.username,
+        usernameUpdatedAt: existingEmail.usernameUpdatedAt ?? null,
+        name: existingEmail.name,
+        passwordHash: existingEmail.passwordHash ?? null,
+        otpCode: existingEmail.otpCode ?? null,
+        otpExpiresAt: existingEmail.otpExpiresAt ?? null,
+        otpLastSentAt: existingEmail.otpLastSentAt ?? null,
+        deletedAt: existingEmail.deletedAt ?? null,
+      };
+
       await this.db.users.updateOne(
         { _id: existingEmail._id },
         {
@@ -89,12 +101,25 @@ export class AuthService {
         },
       );
 
-      await this.sendVerificationEmailAndMarkSent(
-        existingEmail._id,
-        email,
-        displayName,
-        code,
-      );
+      try {
+        await this.sendVerificationEmailAndMarkSent(
+          existingEmail._id,
+          email,
+          displayName,
+          code,
+        );
+      } catch (error) {
+        await this.db.users.updateOne(
+          { _id: existingEmail._id },
+          {
+            $set: {
+              ...previous,
+              updatedAt: new Date(),
+            },
+          },
+        );
+        throw error;
+      }
 
       return {
         requiresVerification: true,
@@ -132,12 +157,17 @@ export class AuthService {
     };
     await this.db.users.insertOne(user);
 
-    await this.sendVerificationEmailAndMarkSent(
-      user._id,
-      email,
-      displayName,
-      code,
-    );
+    try {
+      await this.sendVerificationEmailAndMarkSent(
+        user._id,
+        email,
+        displayName,
+        code,
+      );
+    } catch (error) {
+      await this.db.users.deleteOne({ _id: user._id });
+      throw error;
+    }
 
     // Do NOT issue tokens until email is verified — tokens are returned by
     // verifyEmail() once the user proves ownership of their address.
@@ -439,6 +469,7 @@ export class AuthService {
     to: string,
     name: string,
     code: string,
+    strictDelivery = true,
   ): Promise<void> {
     // Always log OTP in development so testing works without real email delivery
     if (process.env.NODE_ENV !== "production") {
@@ -475,7 +506,11 @@ export class AuthService {
 
     if (!smtpReady) {
       const message = "SMTP is not configured. Unable to deliver OTP email.";
-      if (process.env.NODE_ENV === "production") {
+      if (
+        strictDelivery ||
+        this.shouldEnforceEmailDelivery() ||
+        process.env.NODE_ENV === "production"
+      ) {
         this.logger.error(message);
         throw new ServiceUnavailableException(
           "Email service is unavailable. Please contact support.",
@@ -487,7 +522,11 @@ export class AuthService {
       return;
     }
 
-    await this.sendEmailWithRetries({ to, subject, html }, "verification OTP");
+    await this.sendEmailWithRetries(
+      { to, subject, html },
+      "verification OTP",
+      strictDelivery,
+    );
   }
 
   private async sendPasswordResetEmail(
@@ -545,6 +584,7 @@ export class AuthService {
   private async sendEmailWithRetries(
     payload: OutboundEmailPayload,
     purpose: string,
+    strictDelivery = false,
   ): Promise<void> {
     const from = this.resolveFromAddress();
     const maxAttempts = Number(process.env.SMTP_SEND_RETRIES ?? 2);
@@ -576,11 +616,22 @@ export class AuthService {
       }
     }
 
-    if (process.env.NODE_ENV === "production") {
+    if (
+      strictDelivery ||
+      this.shouldEnforceEmailDelivery() ||
+      process.env.NODE_ENV === "production"
+    ) {
       throw new ServiceUnavailableException(
         "Email service is temporarily unavailable. Please try again.",
       );
     }
+  }
+
+  private shouldEnforceEmailDelivery(): boolean {
+    const raw = process.env.EMAIL_ENFORCE_DELIVERY?.trim().toLowerCase();
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    return false;
   }
 
   private hasSmtpCredentials(): boolean {
@@ -670,8 +721,9 @@ export class AuthService {
     email: string,
     name: string,
     code: string,
+    strictDelivery = true,
   ): Promise<void> {
-    await this.sendVerificationEmail(email, name, code);
+    await this.sendVerificationEmail(email, name, code, strictDelivery);
     await this.db.users.updateOne(
       { _id: userId },
       { $set: { otpLastSentAt: new Date(), updatedAt: new Date() } },
