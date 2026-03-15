@@ -11,6 +11,7 @@ import {
 import { JwtService } from "@nestjs/jwt";
 import { MailerService } from "@nestjs-modules/mailer";
 import { randomUUID, randomInt } from "crypto";
+import { resolve4 } from "dns/promises";
 import * as bcrypt from "bcrypt";
 import * as nodemailer from "nodemailer";
 import SMTPTransport from "nodemailer/lib/smtp-transport";
@@ -646,42 +647,94 @@ export class AuthService {
     html: string;
     from?: string;
   }): Promise<boolean> {
-    try {
-      const host = process.env.SMTP_HOST ?? "smtp.gmail.com";
-      const user = process.env.SMTP_USER?.trim();
-      const pass = process.env.SMTP_PASS?.trim();
-      if (!user || !pass) return false;
+    const smtpHost = process.env.SMTP_HOST ?? "smtp.gmail.com";
+    const user = process.env.SMTP_USER?.trim();
+    const pass = process.env.SMTP_PASS?.trim();
+    if (!user || !pass) return false;
 
-      const fallbackTransport: SMTPTransport.Options = {
-        host,
-        port: Number(process.env.SMTP_FALLBACK_PORT ?? 587),
-        secure: false,
-        requireTLS: true,
-        connectionTimeout: Number(
-          process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
-        ),
-        greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS ?? 10_000),
-        socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000),
-        auth: { user, pass },
-      };
-      const transporter = nodemailer.createTransport(fallbackTransport);
+    const { host, tlsServerName } = await this.resolveSmtpConnectHost(smtpHost);
 
-      await transporter.sendMail({
-        from: payload.from ?? this.resolveFromAddress(),
-        ...payload,
-      });
-      await transporter.close();
-      this.logger.log(
-        `OTP email delivered via STARTTLS fallback to ${payload.to}`,
-      );
-      return true;
-    } catch (err) {
-      this.logger.error(
-        `SMTP STARTTLS fallback failed for ${payload.to}`,
-        err instanceof Error ? err.stack : undefined,
-      );
-      return false;
+    const connectionTimeout = Number(
+      process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
+    );
+    const greetingTimeout = Number(
+      process.env.SMTP_GREETING_TIMEOUT_MS ?? 10_000,
+    );
+    const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000);
+    const fallbackPort = Number(process.env.SMTP_FALLBACK_PORT ?? 587);
+
+    const attempts: Array<{ label: string; options: SMTPTransport.Options }> = [
+      {
+        label: `STARTTLS:${fallbackPort}`,
+        options: {
+          host,
+          port: fallbackPort,
+          secure: false,
+          requireTLS: true,
+          tls: tlsServerName ? { servername: tlsServerName } : undefined,
+          connectionTimeout,
+          greetingTimeout,
+          socketTimeout,
+          auth: { user, pass },
+        },
+      },
+      {
+        label: "SMTPS:465",
+        options: {
+          host,
+          port: 465,
+          secure: true,
+          tls: tlsServerName ? { servername: tlsServerName } : undefined,
+          connectionTimeout,
+          greetingTimeout,
+          socketTimeout,
+          auth: { user, pass },
+        },
+      },
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        const transporter = nodemailer.createTransport(attempt.options);
+        await transporter.sendMail({
+          from: payload.from ?? this.resolveFromAddress(),
+          ...payload,
+        });
+        await transporter.close();
+        this.logger.log(
+          `OTP email delivered via fallback ${attempt.label} to ${payload.to}`,
+        );
+        return true;
+      } catch (err) {
+        this.logger.error(
+          `SMTP fallback ${attempt.label} failed for ${payload.to}`,
+          err instanceof Error ? err.stack : undefined,
+        );
+      }
     }
+
+    return false;
+  }
+
+  private async resolveSmtpConnectHost(hostname: string): Promise<{
+    host: string;
+    tlsServerName?: string;
+  }> {
+    try {
+      const ipv4 = await resolve4(hostname);
+      if (ipv4.length > 0) {
+        return { host: ipv4[0], tlsServerName: hostname };
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Unable to resolve IPv4 for SMTP host ${hostname}; using hostname directly.`,
+      );
+      if (err instanceof Error) {
+        this.logger.warn(err.message);
+      }
+    }
+
+    return { host: hostname };
   }
 
   private otpResendCooldownMs(): number {

@@ -61,12 +61,14 @@ export function httpLoggingMiddleware(
   res: Response,
   next: NextFunction,
 ): void {
+  const path = req.originalUrl.split("?")[0];
+  const isHealthProbe =
+    path === "/health" ||
+    path === "/api/v1/health" ||
+    path.startsWith("/api/v1/health/");
+
   // Avoid noisy probe logs in production and local dev.
-  if (
-    req.method === "HEAD" ||
-    req.originalUrl === "/" ||
-    req.originalUrl === "/health"
-  ) {
+  if (req.method === "HEAD" || path === "/" || isHealthProbe) {
     next();
     return;
   }
