@@ -80,7 +80,12 @@ export class AuthService {
         },
       );
 
-      await this.sendVerificationEmail(email, displayName, code);
+      this.sendVerificationEmail(email, displayName, code).catch((error) => {
+        this.logger.error(
+          `Background OTP send failed for ${email}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      });
 
       return {
         requiresVerification: true,
@@ -117,7 +122,12 @@ export class AuthService {
     };
     await this.db.users.insertOne(user);
 
-    await this.sendVerificationEmail(dto.email, displayName, code);
+    this.sendVerificationEmail(email, displayName, code).catch((error) => {
+      this.logger.error(
+        `Background OTP send failed for ${email}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    });
 
     // Do NOT issue tokens until email is verified — tokens are returned by
     // verifyEmail() once the user proves ownership of their address.
@@ -165,11 +175,16 @@ export class AuthService {
           },
         },
       );
-      await this.sendVerificationEmail(
+      this.sendVerificationEmail(
         user.email,
         this.encryption.decrypt(user.name),
         code,
-      );
+      ).catch((error) => {
+        this.logger.error(
+          `Background OTP send failed for ${user.email}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      });
 
       throw new ForbiddenException({
         message: "Email not verified. A new OTP has been sent.",
