@@ -599,7 +599,7 @@ export class AuthService {
       );
     }
 
-    const { host, tlsServerName } = await this.resolveSmtpConnectHost(smtpHost);
+    const targets = await this.resolveSmtpConnectTargets(smtpHost);
     const connectionTimeout = Number(
       process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
     );
@@ -609,41 +609,51 @@ export class AuthService {
     const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const transportOptions: SMTPTransport.Options = {
-          host,
-          port,
-          secure,
-          tls: tlsServerName ? { servername: tlsServerName } : undefined,
-          connectionTimeout,
-          greetingTimeout,
-          socketTimeout,
-          auth: { user, pass },
-        };
-        const transporter = nodemailer.createTransport(transportOptions);
-        await transporter.sendMail({ ...payload, from });
-        await transporter.close();
-        if (attempt > 1) {
-          this.logger.log(
-            `Email (${purpose}) delivered on retry ${attempt} to ${payload.to}`,
+      let delivered = false;
+      for (const target of targets) {
+        try {
+          const transportOptions: SMTPTransport.Options = {
+            host: target.host,
+            port,
+            secure,
+            tls: target.tlsServerName
+              ? { servername: target.tlsServerName }
+              : undefined,
+            connectionTimeout,
+            greetingTimeout,
+            socketTimeout,
+            auth: { user, pass },
+          };
+          const transporter = nodemailer.createTransport(transportOptions);
+          await transporter.sendMail({ ...payload, from });
+          await transporter.close();
+          if (attempt > 1 || targets.length > 1) {
+            this.logger.log(
+              `Email (${purpose}) delivered on retry ${attempt} via ${target.label} to ${payload.to}`,
+            );
+          }
+          delivered = true;
+          break;
+        } catch (error) {
+          this.logger.error(
+            `Primary SMTP attempt ${attempt}/${maxAttempts} via ${target.label} failed for ${payload.to}`,
+            error instanceof Error ? error.stack : undefined,
           );
         }
+      }
+
+      if (delivered) {
         return;
-      } catch (error) {
-        this.logger.error(
-          `Primary SMTP attempt ${attempt}/${maxAttempts} failed for ${payload.to}`,
-          error instanceof Error ? error.stack : undefined,
-        );
+      }
 
-        const fallbackOk = await this.tryStartTlsFallback({
-          ...payload,
-          from,
-        });
-        if (fallbackOk) return;
+      const fallbackOk = await this.tryStartTlsFallback({
+        ...payload,
+        from,
+      });
+      if (fallbackOk) return;
 
-        if (attempt < maxAttempts) {
-          await this.delay(Number(process.env.SMTP_RETRY_DELAY_MS ?? 1500));
-        }
+      if (attempt < maxAttempts) {
+        await this.delay(Number(process.env.SMTP_RETRY_DELAY_MS ?? 1500));
       }
     }
 
@@ -682,7 +692,7 @@ export class AuthService {
     const pass = process.env.SMTP_PASS?.trim();
     if (!user || !pass) return false;
 
-    const { host, tlsServerName } = await this.resolveSmtpConnectHost(smtpHost);
+    const targets = await this.resolveSmtpConnectTargets(smtpHost);
 
     const connectionTimeout = Number(
       process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
@@ -693,67 +703,77 @@ export class AuthService {
     const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000);
     const fallbackPort = Number(process.env.SMTP_FALLBACK_PORT ?? 587);
 
-    const attempts: Array<{ label: string; options: SMTPTransport.Options }> = [
+    const modes: Array<{
+      label: string;
+      port: number;
+      secure: boolean;
+      requireTLS?: boolean;
+    }> = [
       {
         label: `STARTTLS:${fallbackPort}`,
-        options: {
-          host,
-          port: fallbackPort,
-          secure: false,
-          requireTLS: true,
-          tls: tlsServerName ? { servername: tlsServerName } : undefined,
-          connectionTimeout,
-          greetingTimeout,
-          socketTimeout,
-          auth: { user, pass },
-        },
+        port: fallbackPort,
+        secure: false,
+        requireTLS: true,
       },
-      {
-        label: "SMTPS:465",
-        options: {
-          host,
-          port: 465,
-          secure: true,
-          tls: tlsServerName ? { servername: tlsServerName } : undefined,
-          connectionTimeout,
-          greetingTimeout,
-          socketTimeout,
-          auth: { user, pass },
-        },
-      },
+      { label: "SMTPS:465", port: 465, secure: true },
     ];
 
-    for (const attempt of attempts) {
-      try {
-        const transporter = nodemailer.createTransport(attempt.options);
-        await transporter.sendMail({
-          from: payload.from ?? this.resolveFromAddress(),
-          ...payload,
-        });
-        await transporter.close();
-        this.logger.log(
-          `OTP email delivered via fallback ${attempt.label} to ${payload.to}`,
-        );
-        return true;
-      } catch (err) {
-        this.logger.error(
-          `SMTP fallback ${attempt.label} failed for ${payload.to}`,
-          err instanceof Error ? err.stack : undefined,
-        );
+    for (const mode of modes) {
+      for (const target of targets) {
+        try {
+          const options: SMTPTransport.Options = {
+            host: target.host,
+            port: mode.port,
+            secure: mode.secure,
+            requireTLS: mode.requireTLS,
+            tls: target.tlsServerName
+              ? { servername: target.tlsServerName }
+              : undefined,
+            connectionTimeout,
+            greetingTimeout,
+            socketTimeout,
+            auth: { user, pass },
+          };
+
+          const transporter = nodemailer.createTransport(options);
+          await transporter.sendMail({
+            from: payload.from ?? this.resolveFromAddress(),
+            ...payload,
+          });
+          await transporter.close();
+          this.logger.log(
+            `OTP email delivered via fallback ${mode.label}/${target.label} to ${payload.to}`,
+          );
+          return true;
+        } catch (err) {
+          this.logger.error(
+            `SMTP fallback ${mode.label}/${target.label} failed for ${payload.to}`,
+            err instanceof Error ? err.stack : undefined,
+          );
+        }
       }
     }
 
     return false;
   }
 
-  private async resolveSmtpConnectHost(hostname: string): Promise<{
-    host: string;
-    tlsServerName?: string;
-  }> {
+  private async resolveSmtpConnectTargets(
+    hostname: string,
+  ): Promise<Array<{ host: string; tlsServerName?: string; label: string }>> {
+    const targets: Array<{
+      host: string;
+      tlsServerName?: string;
+      label: string;
+    }> = [];
+
     try {
       const ipv4 = await resolve4(hostname);
-      if (ipv4.length > 0) {
-        return { host: ipv4[0], tlsServerName: hostname };
+      for (const ip of ipv4.slice(0, 4)) {
+        targets.push({
+          host: ip,
+          tlsServerName: hostname,
+          label: `${hostname}@${ip}`,
+        });
       }
     } catch (err) {
       this.logger.warn(
@@ -764,7 +784,8 @@ export class AuthService {
       }
     }
 
-    return { host: hostname };
+    targets.push({ host: hostname, label: hostname });
+    return targets;
   }
 
   private otpResendCooldownMs(): number {
