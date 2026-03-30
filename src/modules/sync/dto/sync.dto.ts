@@ -1,12 +1,12 @@
 import {
   IsArray,
+  IsInt,
   IsDateString,
   IsOptional,
   IsString,
   ValidateNested,
   IsNumber,
   IsBoolean,
-  IsIn,
   IsPositive,
   Min,
   ValidateIf,
@@ -45,6 +45,45 @@ export class SyncBudgetDto {
   @IsBoolean() deleted: boolean;
 }
 
+export class SyncGoalDto {
+  @IsString() id: string;
+
+  @IsOptional()
+  @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @IsString()
+  title?: string;
+
+  @IsOptional()
+  @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @IsString()
+  emoji?: string;
+
+  @IsOptional()
+  @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @IsNumber()
+  @IsPositive()
+  targetAmount?: number;
+
+  @IsOptional()
+  @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @IsNumber()
+  @Min(0)
+  currentAmount?: number;
+
+  @IsOptional()
+  @IsDateString()
+  deadline?: string;
+
+  @IsOptional()
+  @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @IsInt()
+  @Min(0)
+  colorIndex?: number;
+
+  @IsDateString() updatedAt: string;
+  @IsBoolean() deleted: boolean;
+}
+
 export class SyncPushDto {
   @ApiPropertyOptional({ type: [SyncExpenseDto] })
   @IsOptional()
@@ -61,6 +100,14 @@ export class SyncPushDto {
   @ValidateNested({ each: true })
   @Type(() => SyncBudgetDto)
   budgets?: SyncBudgetDto[];
+
+  @ApiPropertyOptional({ type: [SyncGoalDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500, { message: "Cannot sync more than 500 goals at once" })
+  @ValidateNested({ each: true })
+  @Type(() => SyncGoalDto)
+  goals?: SyncGoalDto[];
 }
 
 // ── Pull DTOs ─────────────────────────────────────────────────────────────────

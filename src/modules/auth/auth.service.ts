@@ -10,13 +10,10 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { randomUUID, randomInt } from "crypto";
-import { resolve4 } from "dns/promises";
 import * as bcrypt from "bcrypt";
-import * as nodemailer from "nodemailer";
-import SMTPTransport from "nodemailer/lib/smtp-transport";
 import { DatabaseService } from "../../database/database.service";
 import { EncryptionService } from "../../common/services/encryption.service";
-import { RefreshTokenDoc, UserDoc } from "../../database/database.types";
+import { UserDoc } from "../../database/database.types";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { AuthResponseDto, AuthUserDto } from "./dto/auth-response.dto";
@@ -476,7 +473,7 @@ export class AuthService {
         `\n${"─".repeat(50)}\n📧  OTP for ${to}  →  ${code}\n${"─".repeat(50)}`,
       );
     }
-    const smtpReady = this.hasSmtpCredentials();
+    const resendReady = this.hasResendApiKey();
     const subject = "FinFlow — Verify your email";
     const html = `
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -503,8 +500,8 @@ export class AuthService {
         </div>
       `;
 
-    if (!smtpReady) {
-      const message = "SMTP is not configured. Unable to deliver OTP email.";
+    if (!resendReady) {
+      const message = "Resend is not configured. Unable to deliver OTP email.";
       if (
         strictDelivery ||
         this.shouldEnforceEmailDelivery() ||
@@ -538,7 +535,7 @@ export class AuthService {
         `\n${"─".repeat(50)}\n🔐  RESET OTP for ${to}  →  ${code}\n${"─".repeat(50)}`,
       );
     }
-    const smtpReady = this.hasSmtpCredentials();
+    const resendReady = this.hasResendApiKey();
     const subject = "FinFlow — Reset your password";
     const html = `
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -562,9 +559,9 @@ export class AuthService {
         </div>
       `;
 
-    if (!smtpReady) {
+    if (!resendReady) {
       const message =
-        "SMTP is not configured. Unable to deliver password reset email.";
+        "Resend is not configured. Unable to deliver password reset email.";
       if (process.env.NODE_ENV === "production") {
         this.logger.error(message);
         throw new ServiceUnavailableException(
@@ -586,74 +583,66 @@ export class AuthService {
     strictDelivery = false,
   ): Promise<void> {
     const from = this.resolveFromAddress();
-    const maxAttempts = Number(process.env.SMTP_SEND_RETRIES ?? 2);
-    const smtpHost = process.env.SMTP_HOST ?? "smtp.gmail.com";
-    const port = Number(process.env.SMTP_PORT ?? 587);
-    const secure = (process.env.SMTP_SECURE ?? "false") === "true";
-    const user = process.env.SMTP_USER?.trim();
-    const pass = process.env.SMTP_PASS?.trim();
+    const maxAttempts = Number(process.env.RESEND_SEND_RETRIES ?? 2);
+    const resendApiKey = process.env.RESEND_API_KEY?.trim();
 
-    if (!user || !pass) {
+    if (!resendApiKey) {
       throw new ServiceUnavailableException(
         "Email service is unavailable. Please contact support.",
       );
     }
 
-    const targets = await this.resolveSmtpConnectTargets(smtpHost);
-    const connectionTimeout = Number(
-      process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
+    const resendBaseUrl =
+      process.env.RESEND_API_BASE_URL?.trim() ?? "https://api.resend.com";
+    const endpoint = `${resendBaseUrl.replace(/\/$/, "")}/emails`;
+    const requestTimeoutMs = Number(
+      process.env.RESEND_REQUEST_TIMEOUT_MS ?? 12_000,
     );
-    const greetingTimeout = Number(
-      process.env.SMTP_GREETING_TIMEOUT_MS ?? 10_000,
-    );
-    const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      let delivered = false;
-      for (const target of targets) {
-        try {
-          const transportOptions: SMTPTransport.Options = {
-            host: target.host,
-            port,
-            secure,
-            tls: target.tlsServerName
-              ? { servername: target.tlsServerName }
-              : undefined,
-            connectionTimeout,
-            greetingTimeout,
-            socketTimeout,
-            auth: { user, pass },
-          };
-          const transporter = nodemailer.createTransport(transportOptions);
-          await transporter.sendMail({ ...payload, from });
-          await transporter.close();
-          if (attempt > 1 || targets.length > 1) {
-            this.logger.log(
-              `Email (${purpose}) delivered on retry ${attempt} via ${target.label} to ${payload.to}`,
-            );
-          }
-          delivered = true;
-          break;
-        } catch (error) {
-          this.logger.error(
-            `Primary SMTP attempt ${attempt}/${maxAttempts} via ${target.label} failed for ${payload.to}`,
-            error instanceof Error ? error.stack : undefined,
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => {
+        abortController.abort();
+      }, requestTimeoutMs);
+
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from,
+            to: payload.to,
+            subject: payload.subject,
+            html: payload.html,
+          }),
+          signal: abortController.signal,
+        });
+
+        if (!res.ok) {
+          const details = await res.text();
+          throw new Error(`Resend responded ${res.status}: ${details}`);
+        }
+
+        clearTimeout(timeout);
+        if (attempt > 1) {
+          this.logger.log(
+            `Email (${purpose}) delivered on retry ${attempt} via Resend to ${payload.to}`,
           );
         }
-      }
-
-      if (delivered) {
         return;
+      } catch (error) {
+        clearTimeout(timeout);
+        this.logger.error(
+          `Resend attempt ${attempt}/${maxAttempts} failed for ${payload.to}`,
+          error instanceof Error ? error.stack : undefined,
+        );
       }
-
-      const fallbackOk = await this.tryStartTlsFallback({
-        ...payload,
-        from,
-      });
-      if (fallbackOk) return;
 
       if (attempt < maxAttempts) {
-        await this.delay(Number(process.env.SMTP_RETRY_DELAY_MS ?? 1500));
+        await this.delay(Number(process.env.RESEND_RETRY_DELAY_MS ?? 1500));
       }
     }
 
@@ -675,117 +664,9 @@ export class AuthService {
     return false;
   }
 
-  private hasSmtpCredentials(): boolean {
-    const user = process.env.SMTP_USER?.trim();
-    const pass = process.env.SMTP_PASS?.trim();
-    return Boolean(user && pass);
-  }
-
-  private async tryStartTlsFallback(payload: {
-    to: string;
-    subject: string;
-    html: string;
-    from?: string;
-  }): Promise<boolean> {
-    const smtpHost = process.env.SMTP_HOST ?? "smtp.gmail.com";
-    const user = process.env.SMTP_USER?.trim();
-    const pass = process.env.SMTP_PASS?.trim();
-    if (!user || !pass) return false;
-
-    const targets = await this.resolveSmtpConnectTargets(smtpHost);
-
-    const connectionTimeout = Number(
-      process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
-    );
-    const greetingTimeout = Number(
-      process.env.SMTP_GREETING_TIMEOUT_MS ?? 10_000,
-    );
-    const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000);
-    const fallbackPort = Number(process.env.SMTP_FALLBACK_PORT ?? 587);
-
-    const modes: Array<{
-      label: string;
-      port: number;
-      secure: boolean;
-      requireTLS?: boolean;
-    }> = [
-      {
-        label: `STARTTLS:${fallbackPort}`,
-        port: fallbackPort,
-        secure: false,
-        requireTLS: true,
-      },
-      { label: "SMTPS:465", port: 465, secure: true },
-    ];
-
-    for (const mode of modes) {
-      for (const target of targets) {
-        try {
-          const options: SMTPTransport.Options = {
-            host: target.host,
-            port: mode.port,
-            secure: mode.secure,
-            requireTLS: mode.requireTLS,
-            tls: target.tlsServerName
-              ? { servername: target.tlsServerName }
-              : undefined,
-            connectionTimeout,
-            greetingTimeout,
-            socketTimeout,
-            auth: { user, pass },
-          };
-
-          const transporter = nodemailer.createTransport(options);
-          await transporter.sendMail({
-            from: payload.from ?? this.resolveFromAddress(),
-            ...payload,
-          });
-          await transporter.close();
-          this.logger.log(
-            `OTP email delivered via fallback ${mode.label}/${target.label} to ${payload.to}`,
-          );
-          return true;
-        } catch (err) {
-          this.logger.error(
-            `SMTP fallback ${mode.label}/${target.label} failed for ${payload.to}`,
-            err instanceof Error ? err.stack : undefined,
-          );
-        }
-      }
-    }
-
-    return false;
-  }
-
-  private async resolveSmtpConnectTargets(
-    hostname: string,
-  ): Promise<Array<{ host: string; tlsServerName?: string; label: string }>> {
-    const targets: Array<{
-      host: string;
-      tlsServerName?: string;
-      label: string;
-    }> = [];
-
-    try {
-      const ipv4 = await resolve4(hostname);
-      for (const ip of ipv4.slice(0, 4)) {
-        targets.push({
-          host: ip,
-          tlsServerName: hostname,
-          label: `${hostname}@${ip}`,
-        });
-      }
-    } catch (err) {
-      this.logger.warn(
-        `Unable to resolve IPv4 for SMTP host ${hostname}; using hostname directly.`,
-      );
-      if (err instanceof Error) {
-        this.logger.warn(err.message);
-      }
-    }
-
-    targets.push({ host: hostname, label: hostname });
-    return targets;
+  private hasResendApiKey(): boolean {
+    const resendApiKey = process.env.RESEND_API_KEY?.trim();
+    return Boolean(resendApiKey);
   }
 
   private otpResendCooldownMs(): number {
@@ -793,27 +674,8 @@ export class AuthService {
   }
 
   private resolveFromAddress(): string {
-    const smtpUser = process.env.SMTP_USER?.trim();
     const configuredFrom = process.env.EMAIL_FROM?.trim();
-
-    if (!smtpUser) {
-      return configuredFrom ?? '"FinFlow" <noreply@finflow.app>';
-    }
-
-    // Gmail is strict about sender identity. Keep From aligned with authenticated account.
-    if (smtpUser.endsWith("@gmail.com")) {
-      if (
-        configuredFrom &&
-        !configuredFrom.toLowerCase().includes(smtpUser.toLowerCase())
-      ) {
-        this.logger.warn(
-          "EMAIL_FROM does not match SMTP_USER; using authenticated Gmail address for better deliverability.",
-        );
-      }
-      return `"FinFlow" <${smtpUser}>`;
-    }
-
-    return configuredFrom ?? `"FinFlow" <${smtpUser}>`;
+    return configuredFrom ?? '"FinFlow" <onboarding@resend.dev>';
   }
 
   private delay(ms: number): Promise<void> {

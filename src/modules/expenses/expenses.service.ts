@@ -177,7 +177,7 @@ export class ExpensesService {
         .limit(1)
         .next();
 
-      let baseDate = new Date(lastInstance?.date ?? template.date);
+      const baseDate = new Date(lastInstance?.date ?? template.date);
       baseDate.setHours(0, 0, 0, 0);
 
       const datesToGenerate: Date[] = [];

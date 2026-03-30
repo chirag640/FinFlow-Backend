@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { DatabaseService } from "../../database/database.service";
 import { EncryptionService } from "../../common/services/encryption.service";
-import { ExpenseDoc, BudgetDoc } from "../../database/database.types";
+import { ExpenseDoc, BudgetDoc, GoalDoc } from "../../database/database.types";
 import { SyncPushDto } from "./dto/sync.dto";
 
 @Injectable()
@@ -14,7 +14,7 @@ export class SyncService {
 
   // ── Push (client → server) ─────────────────────────────────────────────────
   async push(userId: string, dto: SyncPushDto) {
-    const results = { expenses: 0, budgets: 0 };
+    const results = { expenses: 0, budgets: 0, goals: 0 };
 
     if (dto.expenses?.length) {
       for (const e of dto.expenses) {
@@ -92,6 +92,42 @@ export class SyncService {
       }
     }
 
+    if (dto.goals?.length) {
+      for (const g of dto.goals) {
+        const clientUpdatedAt = new Date(g.updatedAt);
+        const existing = await this.db.goals.findOne(
+          { _id: g.id },
+          { projection: { updatedAt: 1, userId: 1 } },
+        );
+        if (existing && existing.userId !== userId) continue;
+        if (existing && existing.updatedAt > clientUpdatedAt) continue;
+
+        const doc: Partial<GoalDoc> = {
+          title: g.title ?? "Goal",
+          emoji: g.emoji ?? "🎯",
+          targetAmount: g.targetAmount ?? 0,
+          currentAmount: g.currentAmount ?? 0,
+          deadline: g.deadline ? new Date(g.deadline) : null,
+          colorIndex: g.colorIndex ?? 0,
+          deletedAt: g.deleted ? new Date() : null,
+          updatedAt: new Date(),
+          userId,
+        };
+
+        if (existing) {
+          await this.db.goals.updateOne({ _id: g.id }, { $set: doc });
+        } else {
+          const now = new Date();
+          await this.db.goals.insertOne({
+            _id: g.id ?? randomUUID(),
+            createdAt: now,
+            ...doc,
+          } as GoalDoc);
+        }
+        results.goals++;
+      }
+    }
+
     return { synced: results, timestamp: new Date().toISOString() };
   }
 
@@ -99,12 +135,16 @@ export class SyncService {
   async pull(userId: string, since?: string) {
     const sinceDate = since ? new Date(since) : new Date(0);
 
-    const [expenses, budgets, user] = await Promise.all([
+    const [expenses, budgets, goals, user] = await Promise.all([
       this.db.expenses
         .find({ userId, updatedAt: { $gte: sinceDate } })
         .sort({ updatedAt: 1 })
         .toArray(),
       this.db.budgets
+        .find({ userId, updatedAt: { $gte: sinceDate } })
+        .sort({ updatedAt: 1 })
+        .toArray(),
+      this.db.goals
         .find({ userId, updatedAt: { $gte: sinceDate } })
         .sort({ updatedAt: 1 })
         .toArray(),
@@ -136,6 +176,11 @@ export class SyncService {
         ...b,
         id: b._id,
         deleted: !!b.deletedAt,
+      })),
+      goals: goals.map((g) => ({
+        ...g,
+        id: g._id,
+        deleted: !!g.deletedAt,
       })),
       user: user
         ? {

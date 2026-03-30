@@ -73,6 +73,21 @@ export interface BudgetDoc {
   userId: string;
 }
 
+export interface GoalDoc {
+  _id: string;
+  createdAt: Date;
+  updatedAt: Date;
+  deletedAt?: Date | null;
+
+  title: string;
+  emoji: string;
+  targetAmount: number;
+  currentAmount: number;
+  deadline?: Date | null;
+  colorIndex: number;
+  userId: string;
+}
+
 export interface GroupDoc {
   _id: string;
   createdAt: Date;

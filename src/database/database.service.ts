@@ -14,6 +14,7 @@ import {
   GroupDoc,
   GroupMemberDoc,
   GroupExpenseDoc,
+  GoalDoc,
   InvestmentDoc,
 } from "./database.types";
 
@@ -59,6 +60,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
   get budgets(): Collection<BudgetDoc> {
     return this.db.collection<BudgetDoc>("Budget");
+  }
+  get goals(): Collection<GoalDoc> {
+    return this.db.collection<GoalDoc>("Goal");
   }
   get groups(): Collection<GroupDoc> {
     return this.db.collection<GroupDoc>("Group");
@@ -130,6 +134,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         { unique: true },
       ),
     );
+
+    await safe(() => this.goals.createIndex({ userId: 1 }));
+    await safe(() => this.goals.createIndex({ userId: 1, updatedAt: 1 }));
+    await safe(() => this.goals.createIndex({ deletedAt: 1 }));
 
     await safe(() => this.groups.createIndex({ ownerId: 1 }));
     await safe(() => this.groups.createIndex({ deletedAt: 1 }));

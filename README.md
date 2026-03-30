@@ -46,7 +46,8 @@ cp .env.example .env
 - `JWT_SECRET`
 - `JWT_REFRESH_SECRET`
 - `ENCRYPTION_KEY`
-- SMTP variables for email features
+- `RESEND_API_KEY`
+- `EMAIL_FROM`
 
 ## Run Locally
 
@@ -108,7 +109,7 @@ Ensure these environment variables are set in Render:
 - `JWT_SECRET`
 - `JWT_REFRESH_SECRET`
 - `ENCRYPTION_KEY`
-- SMTP variables if email flows are enabled
+- `RESEND_API_KEY` and `EMAIL_FROM` if email flows are enabled
 
 Health check path for Render:
 

@@ -23,7 +23,11 @@ function SharesSumMatchesAmount(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
     registerDecorator({
       name: "sharesSumMatchesAmount",
-      target: (object as { constructor: Function }).constructor,
+      target: (
+        object as {
+          constructor: new (...args: unknown[]) => unknown;
+        }
+      ).constructor,
       propertyName,
       options: validationOptions,
       validator: {
