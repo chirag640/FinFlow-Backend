@@ -465,7 +465,7 @@ export class AuthService {
     to: string,
     name: string,
     code: string,
-    strictDelivery = true,
+    strictDelivery = false,
   ): Promise<void> {
     // Always log OTP in development so testing works without real email delivery
     if (process.env.NODE_ENV !== "production") {
@@ -687,7 +687,7 @@ export class AuthService {
     email: string,
     name: string,
     code: string,
-    strictDelivery = true,
+    strictDelivery = false,
   ): Promise<void> {
     await this.sendVerificationEmail(email, name, code, strictDelivery);
     await this.db.users.updateOne(
