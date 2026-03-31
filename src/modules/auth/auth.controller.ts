@@ -8,22 +8,22 @@ import {
   Post,
   Req,
 } from "@nestjs/common";
-import { Request } from "express";
 import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { IsUUID } from "class-validator";
+import { Request } from "express";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { Public } from "../../common/decorators/public.decorator";
+import { EncryptionService } from "../../common/services/encryption.service";
 import { AuthService } from "./auth.service";
-import { RegisterDto } from "./dto/register.dto";
+import { AuthResponseDto } from "./dto/auth-response.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
-import { AuthResponseDto } from "./dto/auth-response.dto";
-import { VerifyEmailDto } from "./dto/verify-email.dto";
-import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { RegisterDto } from "./dto/register.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { AuthSessionDto, RevokeSessionDto } from "./dto/session.dto";
-import { Public } from "../../common/decorators/public.decorator";
-import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import { EncryptionService } from "../../common/services/encryption.service";
+import { VerifyEmailDto } from "./dto/verify-email.dto";
 
 class ResendOtpDto {
   @IsUUID()
@@ -155,14 +155,12 @@ export class AuthController {
   @Get("me")
   @ApiOperation({ summary: "Return current authenticated user" })
   me(@CurrentUser() user: any) {
-    const {
-      passwordHash,
-      otpCode,
-      otpExpiresAt,
-      passwordResetCode,
-      passwordResetExpiresAt,
-      ...safe
-    } = user;
+    const safe: Record<string, any> = { ...user };
+    delete safe.passwordHash;
+    delete safe.otpCode;
+    delete safe.otpExpiresAt;
+    delete safe.passwordResetCode;
+    delete safe.passwordResetExpiresAt;
     safe.name = this.encryption.decrypt(safe.name);
     return safe;
   }

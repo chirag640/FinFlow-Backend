@@ -2,25 +2,30 @@
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { randomUUID } from "crypto";
-import { DatabaseService } from "../../database/database.service";
 import { EncryptionService } from "../../common/services/encryption.service";
+import { DatabaseService } from "../../database/database.service";
 import {
   GroupDoc,
-  GroupMemberDoc,
   GroupExpenseDoc,
+  GroupMemberDoc,
 } from "../../database/database.types";
-import { CreateGroupDto } from "./dto/create-group.dto";
+import { NotificationsService } from "../notifications/notifications.service";
 import { AddGroupExpenseDto } from "./dto/add-group-expense.dto";
 import { AddMemberDto } from "./dto/add-member.dto";
+import { CreateGroupDto } from "./dto/create-group.dto";
 
 @Injectable()
 export class GroupsService {
+  private readonly logger = new Logger(GroupsService.name);
+
   constructor(
     private db: DatabaseService,
     private encryption: EncryptionService,
+    private notifications: NotificationsService,
   ) {}
 
   async findAll(userId: string) {
@@ -47,7 +52,13 @@ export class GroupsService {
             deletedAt: null,
           }),
         ]);
-        return { ...g, id: g._id, members, _count: { expenses: expenseCount } };
+        const membersWithUsername = await this._withMemberUsernames(members);
+        return {
+          ...g,
+          id: g._id,
+          members: membersWithUsername,
+          _count: { expenses: expenseCount },
+        };
       }),
     );
     return result;
@@ -64,9 +75,10 @@ export class GroupsService {
         .sort({ date: -1 })
         .toArray(),
     ]);
+    const membersWithUsername = await this._withMemberUsernames(members);
 
     await this._assertMember(id, group.ownerId, userId);
-    return { ...group, id: group._id, members, expenses };
+    return { ...group, id: group._id, members: membersWithUsername, expenses };
   }
 
   async create(userId: string, dto: CreateGroupDto) {
@@ -74,7 +86,7 @@ export class GroupsService {
     // correctly on all devices instead of showing the hardcoded string "You".
     const creator = await this.db.users.findOne(
       { _id: userId, deletedAt: null },
-      { projection: { name: 1 } },
+      { projection: { name: 1, username: 1 } },
     );
     const creatorName = creator ? this.encryption.decrypt(creator.name) : "You";
 
@@ -97,6 +109,7 @@ export class GroupsService {
       groupId: group._id,
       userId,
       name: creatorName,
+      username: creator?.username ?? null,
     };
     await this.db.groupMembers.insertOne(member);
 
@@ -133,12 +146,16 @@ export class GroupsService {
     if (group.ownerId !== userId) throw new ForbiddenException();
 
     let name = dto.name ?? "Member";
+    let username: string | null = null;
     if (dto.userId) {
       const user = await this.db.users.findOne({
         _id: dto.userId,
         deletedAt: null,
       });
-      if (user) name = this.encryption.decrypt(user.name);
+      if (user) {
+        name = this.encryption.decrypt(user.name);
+        username = user.username ?? null;
+      }
     }
 
     const member: GroupMemberDoc = {
@@ -147,8 +164,22 @@ export class GroupsService {
       groupId,
       userId: dto.userId ?? null,
       name,
+      username,
     };
     await this.db.groupMembers.insertOne(member);
+
+    if (dto.userId && dto.userId !== userId) {
+      const addedByName = await this._displayNameForUser(userId);
+      this._dispatchNotification(
+        this.notifications.notifyGroupMemberAdded({
+          addedUserId: dto.userId,
+          groupId,
+          groupName: group.name,
+          addedByName,
+        }),
+      );
+    }
+
     return member;
   }
 
@@ -176,6 +207,44 @@ export class GroupsService {
       date: new Date(dto.date),
     };
     await this.db.groupExpenses.insertOne(expense);
+
+    const members = await this.db.groupMembers.find({ groupId }).toArray();
+    const recipientUserIds = Array.from(
+      new Set(
+        members
+          .map((m) => m.userId)
+          .filter((id): id is string => Boolean(id && id.trim()))
+          .filter((id) => id !== userId),
+      ),
+    );
+
+    if (recipientUserIds.length > 0) {
+      const actorName = await this._displayNameForUser(userId);
+      this._dispatchNotification(
+        this.notifications.notifyGroupExpenseAdded({
+          recipientUserIds,
+          groupId,
+          groupName: group.name,
+          description: dto.description,
+          amount: dto.amount,
+          actorName,
+        }),
+      );
+
+      if (this.notifications.isLargeGroupExpense(dto.amount)) {
+        this._dispatchNotification(
+          this.notifications.notifyLargeExpenseApprovalRequest({
+            recipientUserIds,
+            groupId,
+            groupName: group.name,
+            description: dto.description,
+            amount: dto.amount,
+            actorName,
+          }),
+        );
+      }
+    }
+
     return expense;
   }
 
@@ -191,6 +260,7 @@ export class GroupsService {
       this.db.groupMembers.find({ groupId }).toArray(),
       this.db.groupExpenses.find({ groupId, deletedAt: null }).toArray(),
     ]);
+    const membersWithUsername = await this._withMemberUsernames(members);
 
     const balances: Record<string, number> = {};
     for (const m of members) balances[m._id] = 0;
@@ -228,7 +298,7 @@ export class GroupsService {
       if (Math.abs(debtors[di][1]) < 0.01) di++;
     }
 
-    return { balances, settlements, members };
+    return { balances, settlements, members: membersWithUsername };
   }
 
   async settleUp(
@@ -270,6 +340,26 @@ export class GroupsService {
       isSettlement: true,
     };
     await this.db.groupExpenses.insertOne(expense);
+
+    const recipientUserIds = Array.from(
+      new Set(
+        [fromMember?.userId, toMember?.userId]
+          .filter((id): id is string => Boolean(id && id.trim()))
+          .filter((id) => id !== userId),
+      ),
+    );
+
+    this._dispatchNotification(
+      this.notifications.notifySettlementRecorded({
+        recipientUserIds,
+        groupId,
+        groupName: group.name,
+        fromName: this._displayMemberName(fromMember),
+        toName: this._displayMemberName(toMember),
+        amount,
+      }),
+    );
+
     return expense;
   }
 
@@ -296,6 +386,38 @@ export class GroupsService {
     );
   }
 
+  private async _withMemberUsernames(
+    members: GroupMemberDoc[],
+  ): Promise<Array<GroupMemberDoc & { username?: string | null }>> {
+    const userIds = Array.from(
+      new Set(
+        members
+          .map((m) => m.userId)
+          .filter((id): id is string => Boolean(id && id.trim())),
+      ),
+    );
+
+    if (userIds.length === 0) {
+      return members;
+    }
+
+    const users = await this.db.users
+      .find({ _id: { $in: userIds }, deletedAt: null })
+      .project({ _id: 1, username: 1 })
+      .toArray();
+
+    const usernameByUserId = new Map(
+      users.map((u) => [u._id, u.username ?? null]),
+    );
+
+    return members.map((m) => ({
+      ...m,
+      username:
+        m.username ??
+        (m.userId ? (usernameByUserId.get(m.userId) ?? null) : null),
+    }));
+  }
+
   private async _assertMember(
     groupId: string,
     ownerId: string,
@@ -304,5 +426,30 @@ export class GroupsService {
     if (ownerId === userId) return;
     const member = await this.db.groupMembers.findOne({ groupId, userId });
     if (!member) throw new ForbiddenException();
+  }
+
+  private _dispatchNotification(work: Promise<void>) {
+    work.catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Notification dispatch failed: ${message}`);
+    });
+  }
+
+  private async _displayNameForUser(userId: string): Promise<string> {
+    const user = await this.db.users.findOne(
+      { _id: userId, deletedAt: null },
+      { projection: { name: 1, username: 1 } },
+    );
+    if (!user) return "Someone";
+    if (user.username?.trim()) return `@${user.username}`;
+    return this.encryption.decrypt(user.name);
+  }
+
+  private _displayMemberName(
+    member: GroupMemberDoc | null | undefined,
+  ): string {
+    if (!member) return "a member";
+    if (member.username?.trim()) return `@${member.username}`;
+    return member.name || "a member";
   }
 }

@@ -1,19 +1,19 @@
-import {
-  IsArray,
-  IsInt,
-  IsDateString,
-  IsOptional,
-  IsString,
-  ValidateNested,
-  IsNumber,
-  IsBoolean,
-  IsPositive,
-  Min,
-  ValidateIf,
-  ArrayMaxSize,
-} from "class-validator";
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsDateString,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Min,
+  ValidateIf,
+  ValidateNested,
+} from "class-validator";
 
 // ── Push DTOs ─────────────────────────────────────────────────────────────────
 export class SyncExpenseDto {
@@ -36,11 +36,32 @@ export class SyncExpenseDto {
 
 export class SyncBudgetDto {
   @IsString() id: string;
-  @IsString() categoryKey: string;
-  @IsNumber() @IsPositive() allocatedAmount: number;
-  @IsNumber() month: number;
-  @IsNumber() year: number;
-  @IsBoolean() carryForward: boolean;
+
+  @IsOptional()
+  @ValidateIf((o: SyncBudgetDto) => !o.deleted)
+  @IsString()
+  categoryKey?: string;
+
+  @IsNumber()
+  @ValidateIf((o: SyncBudgetDto) => !o.deleted)
+  @IsPositive()
+  allocatedAmount: number;
+
+  @IsOptional()
+  @ValidateIf((o: SyncBudgetDto) => !o.deleted)
+  @IsNumber()
+  month?: number;
+
+  @IsOptional()
+  @ValidateIf((o: SyncBudgetDto) => !o.deleted)
+  @IsNumber()
+  year?: number;
+
+  @IsOptional()
+  @ValidateIf((o: SyncBudgetDto) => !o.deleted)
+  @IsBoolean()
+  carryForward?: boolean;
+
   @IsDateString() updatedAt: string;
   @IsBoolean() deleted: boolean;
 }

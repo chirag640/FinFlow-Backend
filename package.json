@@ -16,6 +16,8 @@
     "restart": "npm run stop && npm run start:prod",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
+    "test:sync-chaos": "jest --runInBand src/modules/sync/sync.chaos.spec.ts",
+    "test:contract": "jest --runInBand src/common/interceptors/transform.interceptor.spec.ts src/modules/sync/sync.service.spec.ts",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "db:seed": "ts-node src/database/seed.ts"
@@ -35,6 +37,7 @@
     "class-validator": "^0.14.1",
     "cookie-parser": "^1.4.6",
     "dotenv": "^17.3.1",
+    "firebase-admin": "^13.6.0",
     "google-auth-library": "^9.6.3",
     "helmet": "^7.1.0",
     "mongodb": "^7.1.0",
@@ -62,7 +65,10 @@
     "prettier": "^3.2.5",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "5.3.3"
+  },
+  "overrides": {
+    "typescript": "5.3.3"
   },
   "jest": {
     "moduleFileExtensions": [

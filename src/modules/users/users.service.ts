@@ -4,8 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { DatabaseService } from "../../database/database.service";
 import { EncryptionService } from "../../common/services/encryption.service";
+import { DatabaseService } from "../../database/database.service";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 
 @Injectable()
@@ -18,7 +18,10 @@ export class UsersService {
   async findById(id: string) {
     const user = await this.db.users.findOne({ _id: id, deletedAt: null });
     if (!user) throw new NotFoundException("User not found");
-    const { passwordHash, otpCode, otpExpiresAt, ...safe } = user;
+    const safe = { ...user };
+    delete safe.passwordHash;
+    delete safe.otpCode;
+    delete safe.otpExpiresAt;
     return { ...safe, id: safe._id, name: this.encryption.decrypt(safe.name) };
   }
 

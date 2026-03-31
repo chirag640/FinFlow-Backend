@@ -1,25 +1,26 @@
 import { Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
-import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { ScheduleModule } from "@nestjs/schedule";
+import { ThrottlerModule } from "@nestjs/throttler";
 
+import { EncryptionModule } from "./common/services/encryption.module";
 import { DatabaseModule } from "./database/database.module";
 import { AuthModule } from "./modules/auth/auth.module";
-import { UsersModule } from "./modules/users/users.module";
+import { BudgetsModule } from "./modules/budgets/budgets.module";
 import { ExpensesModule } from "./modules/expenses/expenses.module";
 import { GroupsModule } from "./modules/groups/groups.module";
-import { BudgetsModule } from "./modules/budgets/budgets.module";
-import { SyncModule } from "./modules/sync/sync.module";
-import { InvestmentsModule } from "./modules/investments/investments.module";
 import { HealthModule } from "./modules/health/health.module";
-import { EncryptionModule } from "./common/services/encryption.module";
+import { NotificationsModule } from "./modules/notifications/notifications.module";
+import { SyncModule } from "./modules/sync/sync.module";
+import { UsersModule } from "./modules/users/users.module";
 
-import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import {
-  HttpExceptionFilter,
   AllExceptionsFilter,
+  HttpExceptionFilter,
 } from "./common/filters/http-exception.filter";
 import { MongoExceptionFilter } from "./common/filters/mongo-exception.filter";
+import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
+import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { TransformInterceptor } from "./common/interceptors/transform.interceptor";
 
 @Module({
@@ -32,13 +33,13 @@ import { TransformInterceptor } from "./common/interceptors/transform.intercepto
     UsersModule,
     ExpensesModule,
     GroupsModule,
+    NotificationsModule,
     BudgetsModule,
     SyncModule,
-    InvestmentsModule,
     HealthModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_FILTER, useClass: MongoExceptionFilter },

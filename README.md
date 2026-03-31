@@ -1,6 +1,6 @@
 # FinFlow Backend
 
-FinFlow Backend is a NestJS REST API that powers authentication, expenses, budgets, groups, investments, and sync workflows for the FinFlow platform.
+FinFlow Backend is a NestJS REST API that powers authentication, expenses, budgets, groups, and sync workflows for the FinFlow platform.
 
 ## Stack
 
@@ -23,7 +23,6 @@ FinFlow Backend is a NestJS REST API that powers authentication, expenses, budge
 - User profile management
 - Expense and budget CRUD flows
 - Group expenses and settlements
-- Investment module endpoints
 - Sync module for cloud synchronization
 
 ## Prerequisites
@@ -48,6 +47,18 @@ cp .env.example .env
 - `ENCRYPTION_KEY`
 - `RESEND_API_KEY`
 - `EMAIL_FROM`
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (or `FIREBASE_SERVICE_ACCOUNT_BASE64`) for FCM push delivery
+
+## Push Notifications (FCM)
+
+Backend now supports push notifications for:
+
+- Added-to-group events
+- New group expense events
+- Settlement recorded events
+- Daily "today's expenses" summary (runs at 9:00 PM server time)
+
+If Firebase credentials are missing, push notifications are skipped safely and API behavior remains unchanged.
 
 ## Run Locally
 
@@ -123,6 +134,25 @@ Health check path for Render:
 - `npm run start:prod` - run compiled output
 - `npm run lint` - lint and fix
 - `npm run test` - run unit tests
+
+On this Windows setup, use `npm.cmd` for script execution in terminal commands.
+
+## AI-Assisted Development Workflow
+
+This workspace includes a production-focused Copilot setup for consistent backend quality.
+
+- Main rules: `../.github/copilot-instructions.md`
+- Nest instructions: `../.github/instructions/nest.instructions.md`
+- Local playbooks: `../.copilot/skills/`
+- VS Code automation: `../.vscode/tasks.json`, `../.vscode/settings.json`
+- Setup guide: `../docs/AI_VSCODE_POWER_SETUP.md`
+
+Use VS Code task `Validate: All` or run checks manually:
+
+```bash
+npm.cmd run build
+npm.cmd run lint
+```
 
 ## Troubleshooting
 

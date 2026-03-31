@@ -4,18 +4,20 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
-import { Collection, Db, MongoClient, MongoClientOptions } from "mongodb";
 import { randomUUID } from "crypto";
+import { Collection, Db, MongoClient, MongoClientOptions } from "mongodb";
 import {
-  UserDoc,
-  RefreshTokenDoc,
-  ExpenseDoc,
   BudgetDoc,
-  GroupDoc,
-  GroupMemberDoc,
-  GroupExpenseDoc,
+  ExpenseDoc,
   GoalDoc,
-  InvestmentDoc,
+  GroupDoc,
+  GroupExpenseDoc,
+  GroupMemberDoc,
+  NotificationEventDoc,
+  PushDeviceDoc,
+  RefreshTokenDoc,
+  SyncPushIdempotencyDoc,
+  UserDoc,
 } from "./database.types";
 
 export { randomUUID };
@@ -55,6 +57,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   get refreshTokens(): Collection<RefreshTokenDoc> {
     return this.db.collection<RefreshTokenDoc>("RefreshToken");
   }
+  get pushDevices(): Collection<PushDeviceDoc> {
+    return this.db.collection<PushDeviceDoc>("PushDevice");
+  }
+  get notificationEvents(): Collection<NotificationEventDoc> {
+    return this.db.collection<NotificationEventDoc>("NotificationEvent");
+  }
   get expenses(): Collection<ExpenseDoc> {
     return this.db.collection<ExpenseDoc>("Expense");
   }
@@ -73,8 +81,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   get groupExpenses(): Collection<GroupExpenseDoc> {
     return this.db.collection<GroupExpenseDoc>("GroupExpense");
   }
-  get investments(): Collection<InvestmentDoc> {
-    return this.db.collection<InvestmentDoc>("Investment");
+  get syncPushIdempotency(): Collection<SyncPushIdempotencyDoc> {
+    return this.db.collection<SyncPushIdempotencyDoc>("SyncPushIdempotency");
   }
 
   // ── Index bootstrap ─────────────────────────────────────────────────────────
@@ -121,11 +129,30 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ),
     );
 
+    await safe(() =>
+      this.pushDevices.createIndex({ token: 1 }, { unique: true }),
+    );
+    await safe(() => this.pushDevices.createIndex({ userId: 1 }));
+    await safe(() => this.pushDevices.createIndex({ disabledAt: 1 }));
+    await safe(() => this.pushDevices.createIndex({ updatedAt: -1 }));
+
+    await safe(() =>
+      this.notificationEvents.createIndex({ key: 1 }, { unique: true }),
+    );
+    await safe(() => this.notificationEvents.createIndex({ userId: 1 }));
+    await safe(() =>
+      this.notificationEvents.createIndex(
+        { expiresAt: 1 },
+        { expireAfterSeconds: 0 },
+      ),
+    );
+
     await safe(() => this.expenses.createIndex({ userId: 1 }));
     await safe(() => this.expenses.createIndex({ date: 1 }));
     await safe(() => this.expenses.createIndex({ category: 1 }));
     await safe(() => this.expenses.createIndex({ deletedAt: 1 }));
     await safe(() => this.expenses.createIndex({ userId: 1, date: 1 }));
+    await safe(() => this.expenses.createIndex({ userId: 1, updatedAt: 1 }));
 
     await safe(() => this.budgets.createIndex({ userId: 1 }));
     await safe(() =>
@@ -134,6 +161,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         { unique: true },
       ),
     );
+    await safe(() => this.budgets.createIndex({ userId: 1, updatedAt: 1 }));
 
     await safe(() => this.goals.createIndex({ userId: 1 }));
     await safe(() => this.goals.createIndex({ userId: 1, updatedAt: 1 }));
@@ -148,9 +176,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     await safe(() => this.groupExpenses.createIndex({ groupId: 1 }));
     await safe(() => this.groupExpenses.createIndex({ deletedAt: 1 }));
 
-    await safe(() => this.investments.createIndex({ userId: 1 }));
-    await safe(() => this.investments.createIndex({ userId: 1, type: 1 }));
-    await safe(() => this.investments.createIndex({ deletedAt: 1 }));
+    await safe(() =>
+      this.syncPushIdempotency.createIndex(
+        { userId: 1, idempotencyKey: 1 },
+        { unique: true },
+      ),
+    );
+    await safe(() =>
+      this.syncPushIdempotency.createIndex(
+        { expiresAt: 1 },
+        { expireAfterSeconds: 0 },
+      ),
+    );
 
     this.logger.log("MongoDB indexes ensured");
   }

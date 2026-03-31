@@ -41,6 +41,28 @@ export interface RefreshTokenDoc {
   deviceName?: string | null;
 }
 
+export interface PushDeviceDoc {
+  _id: string;
+  createdAt: Date;
+  updatedAt: Date;
+  lastSeenAt: Date;
+  disabledAt?: Date | null;
+
+  userId: string;
+  token: string;
+  platform?: string | null;
+}
+
+export interface NotificationEventDoc {
+  _id: string;
+  createdAt: Date;
+  expiresAt: Date;
+
+  key: string;
+  type: string;
+  userId: string;
+}
+
 export interface ExpenseDoc {
   _id: string;
   createdAt: Date;
@@ -104,6 +126,7 @@ export interface GroupMemberDoc {
   _id: string;
   createdAt: Date;
   name: string;
+  username?: string | null;
   userId?: string | null;
   groupId: string;
 }
@@ -125,36 +148,14 @@ export interface GroupExpenseDoc {
   isSettlement?: boolean;
 }
 
-export type InvestmentType =
-  | "mutualFund"
-  | "fixedDeposit"
-  | "recurringDeposit"
-  | "gold"
-  | "realEstate"
-  | "stock";
-
-export interface InvestmentDoc {
+export interface SyncPushIdempotencyDoc {
   _id: string;
+  userId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  status: "processing" | "completed";
+  response?: unknown;
   createdAt: Date;
   updatedAt: Date;
-  deletedAt?: Date | null;
-
-  userId: string;
-  type: InvestmentType;
-  name: string;
-  /** Total amount invested / principal */
-  investedAmount: number;
-  /** Current market value (manually entered) */
-  currentValue: number;
-  startDate: Date;
-  maturityDate?: Date | null;
-  /** Annual interest rate % — for FD / RD */
-  interestRate?: number | null;
-  /** Units for MF, grams for gold, shares for stocks */
-  quantity?: number | null;
-  /** Purchase price per unit / gram / share */
-  purchasePrice?: number | null;
-  /** Current price per unit / gram / share */
-  currentPrice?: number | null;
-  notes?: string | null;
+  expiresAt: Date;
 }
