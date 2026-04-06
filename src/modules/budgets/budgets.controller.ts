@@ -12,6 +12,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { BudgetsService } from "./budgets.service";
 import { CreateBudgetDto } from "./dto/create-budget.dto";
+import { MonthYearQueryDto } from "../expenses/dto/month-year-query.dto";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 @ApiTags("budgets")
@@ -24,10 +25,9 @@ export class BudgetsController {
   @ApiOperation({ summary: "Get budgets with spending for a month" })
   findByMonth(
     @CurrentUser("id") uid: string,
-    @Query("month") month: number = new Date().getMonth() + 1,
-    @Query("year") year: number = new Date().getFullYear(),
+    @Query() query: MonthYearQueryDto,
   ) {
-    return this.svc.findByMonth(uid, +month, +year);
+    return this.svc.findByMonth(uid, query.month, query.year);
   }
 
   @Post()

@@ -10,6 +10,7 @@ import {
   IsUUID,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsDecimalScale } from "../../../common/validators/decimal-scale.validator";
 
 export class CreateBudgetDto {
   @ApiPropertyOptional({
@@ -26,6 +27,7 @@ export class CreateBudgetDto {
   @ApiProperty({ example: 5000 })
   @IsNumber()
   @IsPositive()
+  @IsDecimalScale(2)
   allocatedAmount: number;
 
   @ApiProperty({ example: 3, description: "1-12" })

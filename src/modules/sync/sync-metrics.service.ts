@@ -32,6 +32,9 @@ export class SyncMetricsService {
   private pullUnchanged = 0;
   private retries = 0;
   private idempotentReplays = 0;
+  private idempotencyHits = 0;
+  private idempotencyMisses = 0;
+  private idempotencyPurged = 0;
   private readonly pullByUser = new Map<string, PullUserStat>();
 
   recordPushSuccess(latencyMs: number, queueDepth: number): void {
@@ -82,6 +85,18 @@ export class SyncMetricsService {
     this.recordRetry(1);
   }
 
+  recordIdempotencyHit(): void {
+    this.idempotencyHits += 1;
+  }
+
+  recordIdempotencyMiss(): void {
+    this.idempotencyMisses += 1;
+  }
+
+  recordIdempotencyPurge(count: number): void {
+    this.idempotencyPurged += Math.max(0, Math.round(count));
+  }
+
   snapshot() {
     const pushP95 = this.p95(this.window.pushLatenciesMs);
     const pullP95 = this.p95(this.window.pullLatenciesMs);
@@ -128,6 +143,9 @@ export class SyncMetricsService {
         pullUnchanged: this.pullUnchanged,
         retries: this.retries,
         idempotentReplays: this.idempotentReplays,
+        idempotencyHits: this.idempotencyHits,
+        idempotencyMisses: this.idempotencyMisses,
+        idempotencyPurged: this.idempotencyPurged,
       },
       queue: {
         lastDepth: this.window.queueDepthSamples.at(-1) ?? 0,

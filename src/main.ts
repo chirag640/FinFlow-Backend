@@ -1,17 +1,18 @@
-import { config as dotenvConfig } from "dotenv";
-import { join } from "path";
-import { setDefaultResultOrder } from "dns";
-import { NestFactory } from "@nestjs/core";
 import { ValidationPipe, VersioningType } from "@nestjs/common";
-import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
-import cookieParser = require("cookie-parser");
+import { NestFactory } from "@nestjs/core";
+import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
+import { setDefaultResultOrder } from "dns";
+import { config as dotenvConfig } from "dotenv";
 import helmet from "helmet";
+import { join } from "path";
 import { AppModule } from "./app.module";
+import { apiLifecycleMiddleware } from "./common/middleware/api-lifecycle.middleware";
+import { httpLoggingMiddleware } from "./common/middleware/http-logging.middleware";
 import {
   idempotencyMiddleware,
   requestContextMiddleware,
 } from "./common/middleware/request-context.middleware";
-import { httpLoggingMiddleware } from "./common/middleware/http-logging.middleware";
+import cookieParser = require("cookie-parser");
 
 // Load .env using __dirname — works regardless of process CWD
 dotenvConfig({ path: join(__dirname, "..", ".env") });
@@ -48,6 +49,7 @@ async function bootstrap() {
   app.use(helmet());
   app.use(cookieParser());
   app.use(requestContextMiddleware);
+  app.use(apiLifecycleMiddleware);
   app.use(httpLoggingMiddleware);
   app.use(idempotencyMiddleware);
 

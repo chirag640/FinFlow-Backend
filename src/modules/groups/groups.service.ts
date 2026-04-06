@@ -18,6 +18,93 @@ import { AddGroupExpenseDto } from "./dto/add-group-expense.dto";
 import { AddMemberDto } from "./dto/add-member.dto";
 import { CreateGroupDto } from "./dto/create-group.dto";
 
+type GroupExpenseSortField = "date" | "amount" | "createdAt";
+type GroupExpensePageQuery = {
+  cursor?: string;
+  take?: number;
+  sortBy?: GroupExpenseSortField;
+  order?: "asc" | "desc";
+};
+
+type GroupDocLite = Pick<
+  GroupDoc,
+  | "_id"
+  | "name"
+  | "emoji"
+  | "description"
+  | "ownerId"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+type GroupMemberDocLite = Pick<
+  GroupMemberDoc,
+  "_id" | "groupId" | "name" | "username" | "userId"
+>;
+
+type GroupExpenseDocLite = Pick<
+  GroupExpenseDoc,
+  | "_id"
+  | "groupId"
+  | "amount"
+  | "description"
+  | "paidByMemberId"
+  | "splitType"
+  | "shares"
+  | "note"
+  | "date"
+  | "isSettlement"
+>;
+
+type GroupExpenseFilter = {
+  groupId: string;
+  deletedAt: null;
+  [key: string]:
+    | string
+    | null
+    | { $gt: Date | number; $lt?: never }
+    | { $lt: Date | number; $gt?: never };
+};
+
+type GroupMemberResponse = {
+  id: string;
+  name: string;
+  username: string | null;
+  userId: string | null;
+};
+
+type GroupExpenseResponse = {
+  id: string;
+  groupId: string;
+  amount: number;
+  description: string;
+  paidByMemberId: string;
+  splitType: string;
+  shares: Array<{ memberId: string; amount: number }>;
+  note: string | null;
+  date: Date;
+  isSettlement: boolean;
+};
+
+const GROUP_EXPENSE_SORT_FIELDS: GroupExpenseSortField[] = [
+  "date",
+  "amount",
+  "createdAt",
+];
+const UUID_V4_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type GroupResponse = {
+  id: string;
+  name: string;
+  emoji: string;
+  description: string | null;
+  ownerId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  members: GroupMemberResponse[];
+};
+
 @Injectable()
 export class GroupsService {
   private readonly logger = new Logger(GroupsService.name);
@@ -29,56 +116,144 @@ export class GroupsService {
   ) {}
 
   async findAll(userId: string) {
+    // Step 1: Get group IDs where user is a member
     const memberGroups = await this.db.groupMembers
       .find({ userId })
       .project({ groupId: 1 })
       .toArray();
     const memberGroupIds = memberGroups.map((m) => m.groupId);
 
+    // Step 2: Get all groups the user owns or is a member of
     const groups = await this.db.groups
       .find({
         deletedAt: null,
         $or: [{ ownerId: userId }, { _id: { $in: memberGroupIds } }],
       })
+      .project<GroupDocLite>({
+        _id: 1,
+        name: 1,
+        emoji: 1,
+        description: 1,
+        ownerId: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      })
       .sort({ updatedAt: -1 })
       .toArray();
 
-    const result = await Promise.all(
-      groups.map(async (g) => {
-        const [members, expenseCount] = await Promise.all([
-          this.db.groupMembers.find({ groupId: g._id }).toArray(),
-          this.db.groupExpenses.countDocuments({
-            groupId: g._id,
-            deletedAt: null,
-          }),
-        ]);
-        const membersWithUsername = await this._withMemberUsernames(members);
-        return {
-          ...g,
-          id: g._id,
-          members: membersWithUsername,
-          _count: { expenses: expenseCount },
-        };
-      }),
+    if (groups.length === 0) return [];
+
+    const groupIds = groups.map((g) => g._id);
+
+    // Step 3: Batch fetch all members for all groups in ONE query
+    const allMembers = await this.db.groupMembers
+      .find({ groupId: { $in: groupIds } })
+      .project<GroupMemberDocLite>({
+        _id: 1,
+        groupId: 1,
+        name: 1,
+        username: 1,
+        userId: 1,
+      })
+      .toArray();
+
+    // Step 4: Batch fetch expense counts for all groups in ONE aggregation
+    const expenseCounts = await this.db.groupExpenses
+      .aggregate<{
+        _id: string;
+        count: number;
+      }>([
+        { $match: { groupId: { $in: groupIds }, deletedAt: null } },
+        { $group: { _id: "$groupId", count: { $sum: 1 } } },
+      ])
+      .toArray();
+
+    const expenseCountByGroup = new Map(
+      expenseCounts.map((e) => [e._id, e.count]),
     );
-    return result;
+
+    // Step 5: Group members by groupId
+    const membersByGroup = new Map<string, GroupMemberDocLite[]>();
+    for (const member of allMembers) {
+      const existing = membersByGroup.get(member.groupId) ?? [];
+      existing.push(member);
+      membersByGroup.set(member.groupId, existing);
+    }
+
+    // Step 6: Batch fetch usernames for all members in ONE query
+    const allMembersWithUsernames = await this._withMemberUsernames(allMembers);
+    const memberWithUsernameById = new Map(
+      allMembersWithUsernames.map((m) => [m._id, m]),
+    );
+
+    // Step 7: Assemble results
+    return groups.map((g) => {
+      const groupMembers = membersByGroup.get(g._id) ?? [];
+      const membersWithUsername = groupMembers.map(
+        (m) => memberWithUsernameById.get(m._id) ?? m,
+      );
+
+      return {
+        ...this._toGroupResponse(g, membersWithUsername),
+        expenseCount: expenseCountByGroup.get(g._id) ?? 0,
+      };
+    });
   }
 
   async findOne(id: string, userId: string) {
-    const group = await this.db.groups.findOne({ _id: id, deletedAt: null });
+    const group = await this.db.groups.findOne(
+      { _id: id, deletedAt: null },
+      {
+        projection: {
+          _id: 1,
+          name: 1,
+          emoji: 1,
+          description: 1,
+          ownerId: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+    );
     if (!group) throw new NotFoundException("Group not found");
 
     const [members, expenses] = await Promise.all([
-      this.db.groupMembers.find({ groupId: id }).toArray(),
+      this.db.groupMembers
+        .find({ groupId: id })
+        .project<GroupMemberDocLite>({
+          _id: 1,
+          groupId: 1,
+          name: 1,
+          username: 1,
+          userId: 1,
+        })
+        .toArray(),
       this.db.groupExpenses
         .find({ groupId: id, deletedAt: null })
+        .project<GroupExpenseDocLite>({
+          _id: 1,
+          groupId: 1,
+          amount: 1,
+          description: 1,
+          paidByMemberId: 1,
+          splitType: 1,
+          shares: 1,
+          note: 1,
+          date: 1,
+          isSettlement: 1,
+        })
         .sort({ date: -1 })
         .toArray(),
     ]);
     const membersWithUsername = await this._withMemberUsernames(members);
 
     await this._assertMember(id, group.ownerId, userId);
-    return { ...group, id: group._id, members: membersWithUsername, expenses };
+
+    return {
+      ...this._toGroupResponse(group, membersWithUsername),
+      expenses: expenses.map((e) => this._toGroupExpenseResponse(e)),
+      expenseCount: expenses.length,
+    };
   }
 
   async create(userId: string, dto: CreateGroupDto) {
@@ -113,7 +288,7 @@ export class GroupsService {
     };
     await this.db.groupMembers.insertOne(member);
 
-    return { ...group, id: group._id, members: [member] };
+    return this._toGroupResponse(group, [member]);
   }
 
   async update(id: string, userId: string, dto: Partial<CreateGroupDto>) {
@@ -124,7 +299,38 @@ export class GroupsService {
       { _id: id },
       { $set: { ...dto, updatedAt: new Date() } },
     );
-    return this.db.groups.findOne({ _id: id });
+
+    const [updated, members] = await Promise.all([
+      this.db.groups.findOne(
+        { _id: id, deletedAt: null },
+        {
+          projection: {
+            _id: 1,
+            name: 1,
+            emoji: 1,
+            description: 1,
+            ownerId: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      ),
+      this.db.groupMembers
+        .find({ groupId: id })
+        .project<GroupMemberDocLite>({
+          _id: 1,
+          groupId: 1,
+          name: 1,
+          username: 1,
+          userId: 1,
+        })
+        .toArray(),
+    ]);
+
+    if (!updated) throw new NotFoundException();
+
+    const membersWithUsername = await this._withMemberUsernames(members);
+    return this._toGroupResponse(updated, membersWithUsername);
   }
 
   async remove(id: string, userId: string) {
@@ -180,7 +386,7 @@ export class GroupsService {
       );
     }
 
-    return member;
+    return this._toGroupMemberResponse(member);
   }
 
   async addExpense(groupId: string, userId: string, dto: AddGroupExpenseDto) {
@@ -245,7 +451,7 @@ export class GroupsService {
       }
     }
 
-    return expense;
+    return this._toGroupExpenseResponse(expense);
   }
 
   async getSettlements(groupId: string, userId: string) {
@@ -298,7 +504,101 @@ export class GroupsService {
       if (Math.abs(debtors[di][1]) < 0.01) di++;
     }
 
-    return { balances, settlements, members: membersWithUsername };
+    return {
+      balances,
+      settlements,
+      members: membersWithUsername.map((m) => this._toGroupMemberResponse(m)),
+    };
+  }
+
+  async getGroupExpenses(
+    groupId: string,
+    userId: string,
+    query: GroupExpensePageQuery,
+  ) {
+    const group = await this.db.groups.findOne({
+      _id: groupId,
+      deletedAt: null,
+    });
+    if (!group) throw new NotFoundException();
+    await this._assertMember(groupId, group.ownerId, userId);
+
+    const take = query.take ?? 20;
+    const sortBy = GROUP_EXPENSE_SORT_FIELDS.includes(
+      query.sortBy as GroupExpenseSortField,
+    )
+      ? (query.sortBy as GroupExpenseSortField)
+      : "date";
+    const order = query.order === "asc" ? "asc" : "desc";
+    const sortDirection = order === "asc" ? 1 : -1;
+
+    // Build filter
+    const filter: GroupExpenseFilter = { groupId, deletedAt: null };
+
+    if (typeof query.cursor === "string" && UUID_V4_REGEX.test(query.cursor)) {
+      const cursorDoc = await this.db.groupExpenses.findOne(
+        {
+          _id: query.cursor,
+          groupId,
+          deletedAt: null,
+        },
+        { projection: { _id: 1, date: 1, amount: 1, createdAt: 1 } },
+      );
+
+      if (cursorDoc) {
+        const cursorValue =
+          sortBy === "date"
+            ? cursorDoc.date
+            : sortBy === "amount"
+              ? cursorDoc.amount
+              : cursorDoc.createdAt;
+        filter[sortBy] =
+          order === "asc" ? { $gt: cursorValue } : { $lt: cursorValue };
+      } else {
+        this.logger.warn(
+          `Invalid cursor for group ${groupId}: ${query.cursor}`,
+        );
+      }
+    } else if (query.cursor) {
+      this.logger.warn(
+        `Rejected non-UUID cursor for group ${groupId}: ${query.cursor}`,
+      );
+    }
+
+    // Fetch page and total in parallel.
+    const [expenses, total] = await Promise.all([
+      this.db.groupExpenses
+        .find(filter)
+        .project<GroupExpenseDocLite>({
+          _id: 1,
+          groupId: 1,
+          amount: 1,
+          description: 1,
+          paidByMemberId: 1,
+          splitType: 1,
+          shares: 1,
+          note: 1,
+          date: 1,
+          isSettlement: 1,
+          createdAt: 1,
+        })
+        .sort({ [sortBy]: sortDirection, _id: sortDirection })
+        .limit(take + 1)
+        .toArray(),
+      this.db.groupExpenses.countDocuments({ groupId, deletedAt: null }),
+    ]);
+
+    const hasMore = expenses.length > take;
+    const data = hasMore ? expenses.slice(0, take) : expenses;
+    const nextCursor =
+      hasMore && data.length > 0 ? data[data.length - 1]._id : null;
+
+    return {
+      data: data.map((e) => this._toGroupExpenseResponse(e)),
+      nextCursor,
+      hasMore,
+      total,
+    };
   }
 
   async settleUp(
@@ -360,7 +660,7 @@ export class GroupsService {
       }),
     );
 
-    return expense;
+    return this._toGroupExpenseResponse(expense);
   }
 
   async removeExpense(groupId: string, expenseId: string, userId: string) {
@@ -380,6 +680,20 @@ export class GroupsService {
     if (expense.isSettlement)
       throw new BadRequestException("Settlement records cannot be deleted");
 
+    // Only group owner or the person who paid can delete an expense
+    const isOwner = group.ownerId === userId;
+    if (!isOwner) {
+      const paidByMember = await this.db.groupMembers.findOne({
+        _id: expense.paidByMemberId,
+        groupId,
+      });
+      if (!paidByMember || paidByMember.userId !== userId) {
+        throw new ForbiddenException(
+          "Only the group owner or expense creator can delete this expense",
+        );
+      }
+    }
+
     await this.db.groupExpenses.updateOne(
       { _id: expenseId },
       { $set: { deletedAt: new Date(), updatedAt: new Date() } },
@@ -387,8 +701,8 @@ export class GroupsService {
   }
 
   private async _withMemberUsernames(
-    members: GroupMemberDoc[],
-  ): Promise<Array<GroupMemberDoc & { username?: string | null }>> {
+    members: GroupMemberDocLite[],
+  ): Promise<Array<GroupMemberDocLite & { username?: string | null }>> {
     const userIds = Array.from(
       new Set(
         members
@@ -416,6 +730,53 @@ export class GroupsService {
         m.username ??
         (m.userId ? (usernameByUserId.get(m.userId) ?? null) : null),
     }));
+  }
+
+  private _toGroupMemberResponse(
+    member: GroupMemberDocLite & { username?: string | null },
+  ): GroupMemberResponse {
+    return {
+      id: member._id,
+      name: member.name,
+      username: member.username ?? null,
+      userId: member.userId ?? null,
+    };
+  }
+
+  private _toGroupExpenseResponse(
+    expense: GroupExpenseDocLite,
+  ): GroupExpenseResponse {
+    return {
+      id: expense._id,
+      groupId: expense.groupId,
+      amount: expense.amount,
+      description: expense.description,
+      paidByMemberId: expense.paidByMemberId,
+      splitType: expense.splitType,
+      shares: (expense.shares ?? []).map((s) => ({
+        memberId: s.memberId,
+        amount: s.amount,
+      })),
+      note: expense.note ?? null,
+      date: expense.date,
+      isSettlement: expense.isSettlement ?? false,
+    };
+  }
+
+  private _toGroupResponse(
+    group: GroupDocLite,
+    members: Array<GroupMemberDocLite & { username?: string | null }>,
+  ): GroupResponse {
+    return {
+      id: group._id,
+      name: group.name,
+      emoji: group.emoji,
+      description: group.description ?? null,
+      ownerId: group.ownerId,
+      createdAt: group.createdAt,
+      updatedAt: group.updatedAt,
+      members: members.map((m) => this._toGroupMemberResponse(m)),
+    };
   }
 
   private async _assertMember(

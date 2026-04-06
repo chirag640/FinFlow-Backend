@@ -35,6 +35,7 @@ export class SyncController {
       dto,
       idempotencyKey,
       Number.isFinite(retryCount) ? retryCount : 0,
+      dto.syncVersion,
     );
   }
 
@@ -42,7 +43,7 @@ export class SyncController {
   @Throttle({ default: { ttl: 60_000, limit: 8 } })
   @ApiOperation({ summary: "Pull server changes since timestamp" })
   pull(@CurrentUser("id") uid: string, @Query() query: SyncPullDto) {
-    return this.svc.pull(uid, query.since);
+    return this.svc.pull(uid, query.since, query.syncVersion);
   }
 
   @Get("telemetry")

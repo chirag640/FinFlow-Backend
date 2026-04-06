@@ -14,6 +14,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { ExpensesService } from "./expenses.service";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
 import { ExpenseQueryDto } from "./dto/expense-query.dto";
+import { MonthYearQueryDto } from "./dto/month-year-query.dto";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 @ApiTags("expenses")
@@ -34,10 +35,9 @@ export class ExpensesController {
   })
   summary(
     @CurrentUser("id") uid: string,
-    @Query("month") month: number = new Date().getMonth() + 1,
-    @Query("year") year: number = new Date().getFullYear(),
+    @Query() query: MonthYearQueryDto,
   ) {
-    return this.svc.getSummary(uid, +month, +year);
+    return this.svc.getSummary(uid, query.month, query.year);
   }
 
   @Get(":id")

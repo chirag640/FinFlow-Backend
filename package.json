@@ -16,10 +16,12 @@
     "restart": "npm run stop && npm run start:prod",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
+    "test:security": "jest --runInBand src/modules/auth/auth.service.spec.ts src/modules/users/users.service.spec.ts src/modules/expenses/dto/expense-query.dto.spec.ts src/modules/groups/dto/group-expense-query.dto.spec.ts src/modules/expenses/expenses.service.spec.ts src/modules/sync/sync.service.spec.ts src/modules/sync/sync.chaos.spec.ts src/modules/sync/dto/sync.dto.spec.ts",
     "test:sync-chaos": "jest --runInBand src/modules/sync/sync.chaos.spec.ts",
     "test:contract": "jest --runInBand src/common/interceptors/transform.interceptor.spec.ts src/modules/sync/sync.service.spec.ts",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
+    "test:coverage:check": "node ./node_modules/jest/bin/jest.js --coverage --runInBand --coverageReporters=text-summary",
     "db:seed": "ts-node src/database/seed.ts"
   },
   "dependencies": {
@@ -84,6 +86,14 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 16,
+        "functions": 15,
+        "lines": 18,
+        "statements": 18
+      }
+    },
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }

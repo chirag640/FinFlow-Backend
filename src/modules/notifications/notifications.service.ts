@@ -5,6 +5,7 @@ import * as admin from "firebase-admin";
 import { MongoServerError } from "mongodb";
 import { DatabaseService } from "../../database/database.service";
 import { GroupExpenseDoc, GroupMemberDoc } from "../../database/database.types";
+import { NOTIFICATION_CONFIG, DB_ERROR_CODES, TIME_CONSTANTS } from "../../common/constants";
 
 type FcmPayload = {
   title: string;
@@ -18,17 +19,23 @@ export class NotificationsService {
   private messaging: admin.messaging.Messaging | null = null;
   private readonly largeExpenseApprovalThreshold = this._numberFromEnv(
     "GROUP_LARGE_EXPENSE_APPROVAL_THRESHOLD",
-    5000,
+    NOTIFICATION_CONFIG.LARGE_EXPENSE_THRESHOLD,
   );
   private readonly inactiveMemberDays = this._numberFromEnv(
     "GROUP_INACTIVE_MEMBER_DAYS",
-    14,
+    NOTIFICATION_CONFIG.INACTIVITY_DAYS,
   );
   private readonly trackedSpikeCategories = ["food", "travel"];
-  private readonly budgetThresholds = [100, 90, 70];
+  private readonly budgetThresholds = NOTIFICATION_CONFIG.BUDGET_ALERT_PERCENTAGES;
 
   constructor(private readonly db: DatabaseService) {
     this.initializeFirebase();
+  }
+
+  getHealthStatus() {
+    return {
+      fcmConfigured: this.messaging !== null,
+    };
   }
 
   async registerDevice(userId: string, token: string, platform?: string) {
@@ -159,29 +166,38 @@ export class NotificationsService {
     const now = new Date();
     const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const dayEnd = new Date(dayStart);
-    dayEnd.setHours(23, 59, 59, 999);
+    dayEnd.setHours(
+      NOTIFICATION_CONFIG.END_OF_DAY_HOURS,
+      NOTIFICATION_CONFIG.END_OF_DAY_MINUTES,
+      NOTIFICATION_CONFIG.END_OF_DAY_SECONDS,
+      NOTIFICATION_CONFIG.END_OF_DAY_MILLISECONDS,
+    );
+
+    // Batch aggregation: get summaries for ALL users in ONE query
+    const summaries = await this.db.expenses
+      .aggregate<{ _id: string; count: number; total: number }>([
+        {
+          $match: {
+            userId: { $in: userIds },
+            deletedAt: null,
+            isIncome: false,
+            date: { $gte: dayStart, $lte: dayEnd },
+          },
+        },
+        {
+          $group: {
+            _id: "$userId",
+            count: { $sum: 1 },
+            total: { $sum: "$amount" },
+          },
+        },
+      ])
+      .toArray();
+
+    const summaryByUser = new Map(summaries.map((s) => [s._id, s]));
 
     for (const userId of userIds) {
-      const [summary] = await this.db.expenses
-        .aggregate<{ count: number; total: number }>([
-          {
-            $match: {
-              userId,
-              deletedAt: null,
-              isIncome: false,
-              date: { $gte: dayStart, $lte: dayEnd },
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              count: { $sum: 1 },
-              total: { $sum: "$amount" },
-            },
-          },
-        ])
-        .toArray();
-
+      const summary = summaryByUser.get(userId);
       const count = summary?.count ?? 0;
       const total = summary?.total ?? 0;
       if (count <= 0 || total <= 0) continue;
@@ -209,15 +225,38 @@ export class NotificationsService {
     if (!this.messaging) return;
 
     const groups = await this.db.groups.find({ deletedAt: null }).toArray();
+    if (groups.length === 0) return;
+
     const dayKey = this.dateKey(new Date());
+    const groupIds = groups.map((g) => g._id);
+
+    // Batch fetch ALL members and expenses for ALL groups
+    const [allMembers, allExpenses] = await Promise.all([
+      this.db.groupMembers.find({ groupId: { $in: groupIds } }).toArray(),
+      this.db.groupExpenses
+        .find({ groupId: { $in: groupIds }, deletedAt: null })
+        .toArray(),
+    ]);
+
+    // Group by groupId
+    const membersByGroup = new Map<string, GroupMemberDoc[]>();
+    const expensesByGroup = new Map<string, GroupExpenseDoc[]>();
+
+    for (const member of allMembers) {
+      const existing = membersByGroup.get(member.groupId) ?? [];
+      existing.push(member);
+      membersByGroup.set(member.groupId, existing);
+    }
+
+    for (const expense of allExpenses) {
+      const existing = expensesByGroup.get(expense.groupId) ?? [];
+      existing.push(expense);
+      expensesByGroup.set(expense.groupId, existing);
+    }
 
     for (const group of groups) {
-      const [members, expenses] = await Promise.all([
-        this.db.groupMembers.find({ groupId: group._id }).toArray(),
-        this.db.groupExpenses
-          .find({ groupId: group._id, deletedAt: null })
-          .toArray(),
-      ]);
+      const members = membersByGroup.get(group._id) ?? [];
+      const expenses = expensesByGroup.get(group._id) ?? [];
       if (members.length === 0 || expenses.length === 0) continue;
 
       const balances = this.computeGroupBalances(members, expenses);
@@ -258,39 +297,64 @@ export class NotificationsService {
     weekStart.setHours(0, 0, 0, 0);
 
     const groups = await this.db.groups.find({ deletedAt: null }).toArray();
+    if (groups.length === 0) return;
+
+    const groupIds = groups.map((g) => g._id);
+
+    // Batch fetch ALL data in 3 queries instead of 3N
+    const [allMembers, allExpenses, weekSummaries] = await Promise.all([
+      this.db.groupMembers.find({ groupId: { $in: groupIds } }).toArray(),
+      this.db.groupExpenses
+        .find({ groupId: { $in: groupIds }, deletedAt: null })
+        .toArray(),
+      this.db.groupExpenses
+        .aggregate<{ _id: string; count: number; total: number }>([
+          {
+            $match: {
+              groupId: { $in: groupIds },
+              deletedAt: null,
+              isSettlement: { $ne: true },
+              date: { $gte: weekStart },
+            },
+          },
+          {
+            $group: {
+              _id: "$groupId",
+              count: { $sum: 1 },
+              total: { $sum: "$amount" },
+            },
+          },
+        ])
+        .toArray(),
+    ]);
+
+    // Index by groupId
+    const membersByGroup = new Map<string, GroupMemberDoc[]>();
+    const expensesByGroup = new Map<string, GroupExpenseDoc[]>();
+    const weekSummaryByGroup = new Map(weekSummaries.map((s) => [s._id, s]));
+
+    for (const member of allMembers) {
+      const existing = membersByGroup.get(member.groupId) ?? [];
+      existing.push(member);
+      membersByGroup.set(member.groupId, existing);
+    }
+
+    for (const expense of allExpenses) {
+      const existing = expensesByGroup.get(expense.groupId) ?? [];
+      existing.push(expense);
+      expensesByGroup.set(expense.groupId, existing);
+    }
 
     for (const group of groups) {
-      const [members, allExpenses, weekSummary] = await Promise.all([
-        this.db.groupMembers.find({ groupId: group._id }).toArray(),
-        this.db.groupExpenses
-          .find({ groupId: group._id, deletedAt: null })
-          .toArray(),
-        this.db.groupExpenses
-          .aggregate<{ count: number; total: number }>([
-            {
-              $match: {
-                groupId: group._id,
-                deletedAt: null,
-                isSettlement: { $ne: true },
-                date: { $gte: weekStart },
-              },
-            },
-            {
-              $group: {
-                _id: null,
-                count: { $sum: 1 },
-                total: { $sum: "$amount" },
-              },
-            },
-          ])
-          .toArray(),
-      ]);
+      const members = membersByGroup.get(group._id) ?? [];
+      const allGroupExpenses = expensesByGroup.get(group._id) ?? [];
+      const weekSummary = weekSummaryByGroup.get(group._id);
 
       if (members.length === 0) continue;
 
-      const balances = this.computeGroupBalances(members, allExpenses);
-      const count = weekSummary[0]?.count ?? 0;
-      const total = weekSummary[0]?.total ?? 0;
+      const balances = this.computeGroupBalances(members, allGroupExpenses);
+      const count = weekSummary?.count ?? 0;
+      const total = weekSummary?.total ?? 0;
 
       for (const member of members) {
         const userId = member.userId?.trim();
@@ -336,69 +400,107 @@ export class NotificationsService {
       now.getDate(),
     );
     const todayEnd = new Date(todayStart);
-    todayEnd.setHours(23, 59, 59, 999);
+    todayEnd.setHours(
+      NOTIFICATION_CONFIG.END_OF_DAY_HOURS,
+      NOTIFICATION_CONFIG.END_OF_DAY_MINUTES,
+      NOTIFICATION_CONFIG.END_OF_DAY_SECONDS,
+      NOTIFICATION_CONFIG.END_OF_DAY_MILLISECONDS,
+    );
     const prevStart = new Date(todayStart);
     prevStart.setDate(prevStart.getDate() - 7);
     const prevEnd = new Date(todayStart);
     prevEnd.setMilliseconds(-1);
     const dayKey = this.dateKey(now);
 
-    for (const userId of userIds) {
-      const todayRows = await this.db.expenses
-        .aggregate<{ _id: string; total: number }>([
-          {
-            $match: {
-              userId,
-              deletedAt: null,
-              isIncome: false,
-              date: { $gte: todayStart, $lte: todayEnd },
-            },
+    // Batch fetch today's totals for ALL users, grouped by userId and category
+    const todayTotals = await this.db.expenses
+      .aggregate<{ userId: string; category: string; total: number }>([
+        {
+          $match: {
+            userId: { $in: userIds },
+            deletedAt: null,
+            isIncome: false,
+            date: { $gte: todayStart, $lte: todayEnd },
+            category: { $in: this.trackedSpikeCategories },
           },
-          { $group: { _id: "$category", total: { $sum: "$amount" } } },
-        ])
-        .toArray();
-
-      for (const row of todayRows) {
-        const category = (row._id ?? "").toLowerCase();
-        if (!this.trackedSpikeCategories.includes(category)) continue;
-        if (row.total < 300) continue;
-
-        const [baseline] = await this.db.expenses
-          .aggregate<{ total: number }>([
-            {
-              $match: {
-                userId,
-                category,
-                deletedAt: null,
-                isIncome: false,
-                date: { $gte: prevStart, $lte: prevEnd },
-              },
-            },
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-          ])
-          .toArray();
-
-        const avg = (baseline?.total ?? 0) / 7;
-        if (avg <= 0) continue;
-        const ratio = row.total / avg;
-        if (ratio < 1.8) continue;
-
-        await this.sendOnceToUser(
-          userId,
-          `category-spike:${category}:${dayKey}`,
-          {
-            title: `${this.categoryLabel(category)} spike today`,
-            body: `Today is ${this.formatAmount(row.total)} (${ratio.toFixed(1)}x your recent average).`,
-            data: {
-              type: "category_spike_alert",
-              category,
-              amount: row.total.toFixed(2),
-              average: avg.toFixed(2),
-            },
+        },
+        {
+          $group: {
+            _id: { userId: "$userId", category: "$category" },
+            total: { $sum: "$amount" },
           },
-          3,
-        );
-      }
+        },
+        {
+          $project: {
+            _id: 0,
+            userId: "$_id.userId",
+            category: "$_id.category",
+            total: 1,
+          },
+        },
+        { $match: { total: { $gte: NOTIFICATION_CONFIG.CATEGORY_SPIKE_MIN_AMOUNT } } },
+      ])
+      .toArray();
+
+    if (todayTotals.length === 0) return;
+
+    // Batch fetch baseline totals for ALL relevant user+category combos
+    const baselineTotals = await this.db.expenses
+      .aggregate<{ userId: string; category: string; total: number }>([
+        {
+          $match: {
+            userId: { $in: userIds },
+            deletedAt: null,
+            isIncome: false,
+            date: { $gte: prevStart, $lte: prevEnd },
+            category: { $in: this.trackedSpikeCategories },
+          },
+        },
+        {
+          $group: {
+            _id: { userId: "$userId", category: "$category" },
+            total: { $sum: "$amount" },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            userId: "$_id.userId",
+            category: "$_id.category",
+            total: 1,
+          },
+        },
+      ])
+      .toArray();
+
+    const baselineMap = new Map(
+      baselineTotals.map((b) => [`${b.userId}:${b.category}`, b.total]),
+    );
+
+    for (const row of todayTotals) {
+      const category = (row.category ?? "").toLowerCase();
+      const baselineTotal = baselineMap.get(`${row.userId}:${category}`) ?? 0;
+      const avg = baselineTotal / 7;
+      if (avg <= 0) continue;
+
+      const ratio = row.total / avg;
+      if (ratio < 1.8) continue;
+
+      await this.sendOnceToUser(
+        row.userId,
+        `category-spike:${category}:${dayKey}`,
+        {
+          title: `${this.categoryLabel(category)} spike today`,
+          body: `Today is ${this.formatAmount(row.total)} (${ratio.toFixed(1)}x your recent average).`,
+          data: {
+            type: "category_spike_alert",
+            category,
+            amount: row.total.toFixed(2),
+            average: avg.toFixed(2),
+          },
+        },
+        3,
+      );
     }
   }
 
@@ -421,17 +523,36 @@ export class NotificationsService {
     tomorrow.setHours(0, 0, 0, 0);
     const tomorrowKey = this.dateKey(tomorrow);
 
+    const templateIds = templates.map((t) => t._id);
+
+    // Batch fetch the latest instance for EACH template in ONE query
+    const latestInstances = await this.db.expenses
+      .aggregate<{ _id: string; lastDate: Date }>([
+        {
+          $match: {
+            recurringParentId: { $in: templateIds },
+            deletedAt: null,
+          },
+        },
+        {
+          $group: {
+            _id: "$recurringParentId",
+            lastDate: { $max: "$date" },
+          },
+        },
+      ])
+      .toArray();
+
+    const lastDateByTemplateId = new Map(
+      latestInstances.map((i) => [i._id, i.lastDate]),
+    );
+
     for (const template of templates) {
       const userId = template.userId?.trim();
       if (!userId || !template.recurringRule) continue;
 
-      const lastInstance = await this.db.expenses
-        .find({ recurringParentId: template._id, deletedAt: null })
-        .sort({ date: -1 })
-        .limit(1)
-        .next();
-
-      const baseDate = new Date(lastInstance?.date ?? template.date);
+      const lastDate = lastDateByTemplateId.get(template._id);
+      const baseDate = new Date(lastDate ?? template.date);
       baseDate.setHours(0, 0, 0, 0);
       const nextDate = this.nextOccurrence(baseDate, template.recurringRule);
       if (!this.isSameDate(nextDate, tomorrow)) continue;
@@ -461,32 +582,67 @@ export class NotificationsService {
     const month = now.getMonth() + 1;
     const year = now.getFullYear();
     const monthStart = new Date(year, month - 1, 1);
-    const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
+    const monthEnd = new Date(
+      year,
+      month,
+      0,
+      NOTIFICATION_CONFIG.END_OF_DAY_HOURS,
+      NOTIFICATION_CONFIG.END_OF_DAY_MINUTES,
+      NOTIFICATION_CONFIG.END_OF_DAY_SECONDS,
+      NOTIFICATION_CONFIG.END_OF_DAY_MILLISECONDS,
+    );
 
     const budgets = await this.db.budgets
       .find({ month, year, deletedAt: null })
       .toArray();
     if (budgets.length === 0) return;
 
+    // Collect all user+category combos to query
+    const userCategoryPairs = budgets
+      .filter((b) => b.allocatedAmount > 0)
+      .map((b) => ({ userId: b.userId, category: b.categoryKey }));
+
+    if (userCategoryPairs.length === 0) return;
+
+    // Batch fetch spent amounts for ALL budgets in ONE query
+    const spentAmounts = await this.db.expenses
+      .aggregate<{ userId: string; category: string; total: number }>([
+        {
+          $match: {
+            $or: userCategoryPairs.map((p) => ({
+              userId: p.userId,
+              category: p.category,
+            })),
+            deletedAt: null,
+            isIncome: false,
+            date: { $gte: monthStart, $lte: monthEnd },
+          },
+        },
+        {
+          $group: {
+            _id: { userId: "$userId", category: "$category" },
+            total: { $sum: "$amount" },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            userId: "$_id.userId",
+            category: "$_id.category",
+            total: 1,
+          },
+        },
+      ])
+      .toArray();
+
+    const spentMap = new Map(
+      spentAmounts.map((s) => [`${s.userId}:${s.category}`, s.total]),
+    );
+
     for (const budget of budgets) {
       if (budget.allocatedAmount <= 0) continue;
 
-      const [spentRow] = await this.db.expenses
-        .aggregate<{ total: number }>([
-          {
-            $match: {
-              userId: budget.userId,
-              category: budget.categoryKey,
-              deletedAt: null,
-              isIncome: false,
-              date: { $gte: monthStart, $lte: monthEnd },
-            },
-          },
-          { $group: { _id: null, total: { $sum: "$amount" } } },
-        ])
-        .toArray();
-
-      const spent = spentRow?.total ?? 0;
+      const spent = spentMap.get(`${budget.userId}:${budget.categoryKey}`) ?? 0;
       const pct = (spent / budget.allocatedAmount) * 100;
 
       for (const threshold of this.budgetThresholds) {
@@ -522,22 +678,49 @@ export class NotificationsService {
     if (!this.messaging) return;
 
     const groups = await this.db.groups.find({ deletedAt: null }).toArray();
+    if (groups.length === 0) return;
+
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - this.inactiveMemberDays);
     const weekKey = this.isoWeekKey(new Date());
+    const groupIds = groups.map((g) => g._id);
+
+    // Batch fetch ALL data in 2 queries
+    const [allMembers, recentExpenses] = await Promise.all([
+      this.db.groupMembers.find({ groupId: { $in: groupIds } }).toArray(),
+      this.db.groupExpenses
+        .find({
+          groupId: { $in: groupIds },
+          deletedAt: null,
+          date: { $gte: cutoff },
+        })
+        .toArray(),
+    ]);
+
+    // Index by groupId
+    const membersByGroup = new Map<string, GroupMemberDoc[]>();
+    const expensesByGroup = new Map<string, GroupExpenseDoc[]>();
+
+    for (const member of allMembers) {
+      const existing = membersByGroup.get(member.groupId) ?? [];
+      existing.push(member);
+      membersByGroup.set(member.groupId, existing);
+    }
+
+    for (const expense of recentExpenses) {
+      const existing = expensesByGroup.get(expense.groupId) ?? [];
+      existing.push(expense);
+      expensesByGroup.set(expense.groupId, existing);
+    }
 
     for (const group of groups) {
-      const [members, recentExpenses] = await Promise.all([
-        this.db.groupMembers.find({ groupId: group._id }).toArray(),
-        this.db.groupExpenses
-          .find({ groupId: group._id, deletedAt: null, date: { $gte: cutoff } })
-          .toArray(),
-      ]);
+      const members = membersByGroup.get(group._id) ?? [];
+      const groupExpenses = expensesByGroup.get(group._id) ?? [];
 
       if (members.length === 0) continue;
 
       const activeMemberIds = new Set<string>();
-      for (const expense of recentExpenses) {
+      for (const expense of groupExpenses) {
         activeMemberIds.add(expense.paidByMemberId);
         for (const share of expense.shares) {
           activeMemberIds.add(share.memberId);
@@ -576,14 +759,37 @@ export class NotificationsService {
 
     const monthKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
     const groups = await this.db.groups.find({ deletedAt: null }).toArray();
+    if (groups.length === 0) return;
+
+    const groupIds = groups.map((g) => g._id);
+
+    // Batch fetch ALL data in 2 queries
+    const [allMembers, allExpenses] = await Promise.all([
+      this.db.groupMembers.find({ groupId: { $in: groupIds } }).toArray(),
+      this.db.groupExpenses
+        .find({ groupId: { $in: groupIds }, deletedAt: null })
+        .toArray(),
+    ]);
+
+    // Index by groupId
+    const membersByGroup = new Map<string, GroupMemberDoc[]>();
+    const expensesByGroup = new Map<string, GroupExpenseDoc[]>();
+
+    for (const member of allMembers) {
+      const existing = membersByGroup.get(member.groupId) ?? [];
+      existing.push(member);
+      membersByGroup.set(member.groupId, existing);
+    }
+
+    for (const expense of allExpenses) {
+      const existing = expensesByGroup.get(expense.groupId) ?? [];
+      existing.push(expense);
+      expensesByGroup.set(expense.groupId, existing);
+    }
 
     for (const group of groups) {
-      const [members, expenses] = await Promise.all([
-        this.db.groupMembers.find({ groupId: group._id }).toArray(),
-        this.db.groupExpenses
-          .find({ groupId: group._id, deletedAt: null })
-          .toArray(),
-      ]);
+      const members = membersByGroup.get(group._id) ?? [];
+      const expenses = expensesByGroup.get(group._id) ?? [];
       if (members.length === 0 || expenses.length === 0) continue;
 
       const balances = this.computeGroupBalances(members, expenses);
@@ -673,7 +879,7 @@ export class NotificationsService {
     d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
     const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
     const weekNo = Math.ceil(
-      ((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
+      ((d.getTime() - yearStart.getTime()) / TIME_CONSTANTS.ONE_DAY_MS + 1) / 7,
     );
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
   }
@@ -767,7 +973,7 @@ export class NotificationsService {
       });
       return true;
     } catch (error) {
-      if (error instanceof MongoServerError && error.code === 11000) {
+      if (error instanceof MongoServerError && error.code === DB_ERROR_CODES.MONGO_DUPLICATE_KEY_ERROR) {
         return false;
       }
       throw error;
@@ -823,8 +1029,8 @@ export class NotificationsService {
 
     const staleTokens: string[] = [];
 
-    for (let i = 0; i < tokens.length; i += 500) {
-      const batch = tokens.slice(i, i + 500);
+    for (let i = 0; i < tokens.length; i += NOTIFICATION_CONFIG.FCM_BATCH_SIZE) {
+      const batch = tokens.slice(i, i + NOTIFICATION_CONFIG.FCM_BATCH_SIZE);
       const response = await this.messaging.sendEachForMulticast({
         tokens: batch,
         notification: {

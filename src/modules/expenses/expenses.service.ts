@@ -4,12 +4,30 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common";
-import { randomUUID } from "crypto";
 import { Cron, CronExpression } from "@nestjs/schedule";
+import { randomUUID } from "crypto";
 import { DatabaseService } from "../../database/database.service";
+import { ExpenseDoc } from "../../database/database.types";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
 import { ExpenseQueryDto } from "./dto/expense-query.dto";
-import { ExpenseDoc } from "../../database/database.types";
+
+type ExpenseFilter = {
+  userId: string;
+  deletedAt: null;
+  category?: string;
+  description?: { $regex: string; $options: "i" };
+  date?: { $gte?: Date; $lte?: Date };
+  _id?: { $lt: string };
+};
+
+type ExpenseUpdateSet = Partial<Omit<CreateExpenseDto, "date">> & {
+  updatedAt: Date;
+  date?: Date;
+};
+
+const EXPENSE_SORT_FIELDS = ["date", "amount", "createdAt"] as const;
+const UUID_V4_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class ExpensesService {
@@ -18,10 +36,13 @@ export class ExpensesService {
   constructor(private db: DatabaseService) {}
 
   async findAll(userId: string, query: ExpenseQueryDto) {
-    const filter: Record<string, any> = { userId, deletedAt: null };
+    const filter: ExpenseFilter = { userId, deletedAt: null };
 
-    if (query.category) filter.category = query.category;
-    if (query.search)
+    if (typeof query.category === "string" && query.category.length > 0) {
+      filter.category = query.category;
+    }
+
+    if (typeof query.search === "string" && query.search.length > 0)
       filter.description = {
         $regex: query.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
         $options: "i",
@@ -32,10 +53,16 @@ export class ExpensesService {
         ...(query.to && { $lte: new Date(query.to) }),
       };
     }
-    if (query.cursor) filter._id = { $lt: query.cursor };
+    if (typeof query.cursor === "string" && UUID_V4_REGEX.test(query.cursor)) {
+      filter._id = { $lt: query.cursor };
+    }
 
     const take = (query.take ?? 20) + 1;
-    const sortField = query.sortBy ?? "date";
+    const sortField = EXPENSE_SORT_FIELDS.includes(
+      query.sortBy as (typeof EXPENSE_SORT_FIELDS)[number],
+    )
+      ? (query.sortBy as (typeof EXPENSE_SORT_FIELDS)[number])
+      : "date";
     const sortDir = query.order === "asc" ? 1 : -1;
 
     const items = await this.db.expenses
@@ -48,9 +75,11 @@ export class ExpensesService {
     const data = hasMore ? items.slice(0, -1) : items;
     // Only run countDocuments on the first page (no cursor) to avoid
     // an extra full-scan on every paginated scroll request.
-    const total = query.cursor
+    const countFilter: ExpenseFilter = { ...filter };
+    delete countFilter._id;
+    const total = filter._id
       ? undefined
-      : await this.db.expenses.countDocuments(filter);
+      : await this.db.expenses.countDocuments(countFilter);
 
     return {
       data: data.map(this._toClient),
@@ -92,8 +121,9 @@ export class ExpensesService {
 
   async update(id: string, userId: string, dto: Partial<CreateExpenseDto>) {
     await this.findOne(id, userId);
-    const set: Record<string, any> = { ...dto, updatedAt: new Date() };
-    if (dto.date) set.date = new Date(dto.date);
+    const { date, ...rest } = dto;
+    const set: ExpenseUpdateSet = { ...rest, updatedAt: new Date() };
+    if (date) set.date = new Date(date);
     await this.db.expenses.updateOne({ _id: id }, { $set: set });
     return this.findOne(id, userId);
   }

@@ -9,14 +9,15 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
-import { randomUUID, randomInt } from "crypto";
 import * as bcrypt from "bcrypt";
-import { DatabaseService } from "../../database/database.service";
+import { randomInt, randomUUID } from "crypto";
+import { AUTH_CONFIG } from "../../common/constants";
 import { EncryptionService } from "../../common/services/encryption.service";
+import { DatabaseService } from "../../database/database.service";
 import { UserDoc } from "../../database/database.types";
-import { RegisterDto } from "./dto/register.dto";
-import { LoginDto } from "./dto/login.dto";
 import { AuthResponseDto, AuthUserDto } from "./dto/auth-response.dto";
+import { LoginDto } from "./dto/login.dto";
+import { RegisterDto } from "./dto/register.dto";
 import { AuthSessionDto } from "./dto/session.dto";
 
 type SessionMeta = {
@@ -60,7 +61,10 @@ export class AuthService {
       throw new ConflictException("Username already taken");
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const passwordHash = await bcrypt.hash(
+      dto.password,
+      AUTH_CONFIG.BCRYPT_ROUNDS_PASSWORD,
+    );
     const displayName = dto.name?.trim() || email.split("@")[0];
     const { code, hash, expiresAt } = await this.generateOtp();
 
@@ -129,6 +133,7 @@ export class AuthService {
           currency: existingEmail.currency,
           emailVerified: false,
           monthlyBudget: existingEmail.monthlyBudget ?? 0,
+          hasPin: false,
         },
       };
     }
@@ -179,6 +184,7 @@ export class AuthService {
         currency: user.currency,
         emailVerified: false,
         monthlyBudget: 0,
+        hasPin: false,
       },
     };
   }
@@ -215,7 +221,7 @@ export class AuthService {
       await this.sendVerificationEmailAndMarkSent(
         user._id,
         user.email,
-        this.encryption.decrypt(user.name),
+        this.safeDecryptName(user.name),
         code,
       );
 
@@ -287,7 +293,7 @@ export class AuthService {
     const { code, hash, expiresAt } = await this.generateOtp();
     await this.sendVerificationEmail(
       user.email,
-      this.encryption.decrypt(user.name),
+      this.safeDecryptName(user.name),
       code,
     );
     const now = new Date();
@@ -335,7 +341,7 @@ export class AuthService {
 
     await this.sendPasswordResetEmail(
       user.email,
-      this.encryption.decrypt(user.name),
+      this.safeDecryptName(user.name),
       code,
     );
   }
@@ -357,7 +363,10 @@ export class AuthService {
     const valid = await bcrypt.compare(code, user.passwordResetCode);
     if (!valid) throw new BadRequestException("Invalid or expired reset code");
 
-    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const passwordHash = await bcrypt.hash(
+      newPassword,
+      AUTH_CONFIG.BCRYPT_ROUNDS_PASSWORD,
+    );
     await this.db.users.updateOne(
       { _id: user._id },
       {
@@ -379,6 +388,8 @@ export class AuthService {
     refreshToken: string,
     sessionMeta?: SessionMeta,
   ): Promise<AuthResponseDto> {
+    this.verifyRefreshTokenSignature(refreshToken);
+
     const stored = await this.db.refreshTokens.findOne({ token: refreshToken });
     if (!stored || new Date() > new Date(stored.expiresAt)) {
       if (stored) await this.db.refreshTokens.deleteOne({ _id: stored._id });
@@ -399,8 +410,9 @@ export class AuthService {
         ipAddress: sessionMeta?.ipAddress ?? stored.ipAddress ?? null,
         userAgent: sessionMeta?.userAgent ?? stored.userAgent ?? null,
         deviceName:
-          this.deriveDeviceName(sessionMeta?.userAgent ?? stored.userAgent) ??
+          sessionMeta?.deviceName ??
           stored.deviceName ??
+          this.deriveDeviceName(sessionMeta?.userAgent ?? stored.userAgent) ??
           null,
       },
     });
@@ -444,7 +456,7 @@ export class AuthService {
     return this.jwtService.sign(
       { sub: user._id, email: user.email },
       {
-        secret: process.env.JWT_SECRET,
+        secret: this.getRequiredSecret("JWT_SECRET"),
         expiresIn: process.env.JWT_EXPIRES_IN ?? "1d",
       },
     );
@@ -455,8 +467,11 @@ export class AuthService {
     hash: string;
     expiresAt: Date;
   }> {
-    const code = randomInt(100000, 1000000).toString();
-    const hash = await bcrypt.hash(code, 10);
+    const code = randomInt(
+      AUTH_CONFIG.OTP_RANGE_MIN,
+      AUTH_CONFIG.OTP_RANGE_MAX,
+    ).toString();
+    const hash = await bcrypt.hash(code, AUTH_CONFIG.BCRYPT_ROUNDS_OTP);
     const expiresAt = new Date(Date.now() + 10 * 60_000);
     return { code, hash, expiresAt };
   }
@@ -705,10 +720,11 @@ export class AuthService {
     },
   ): Promise<AuthResponseDto> {
     const accessToken = this.signAccess(user);
+    const refreshSecret = this.getRequiredSecret("JWT_REFRESH_SECRET");
     const refreshValue = this.jwtService.sign(
       { sub: user._id },
       {
-        secret: process.env.JWT_REFRESH_SECRET,
+        secret: refreshSecret,
         expiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? "7d",
       },
     );
@@ -747,17 +763,18 @@ export class AuthService {
     return {
       accessToken,
       refreshToken: refreshValue,
-      expiresIn: 86400, // 1 day in seconds
+      expiresIn: AUTH_CONFIG.JWT_EXPIRY_SECONDS,
       user: {
         id: user._id,
         email: user.email,
         username: user.username ?? null,
-        name: this.encryption.decrypt(user.name),
+        name: this.safeDecryptName(user.name),
         avatarUrl: user.avatarUrl ?? null,
         role: user.role,
         currency: user.currency,
         emailVerified: user.emailVerified,
         monthlyBudget: user.monthlyBudget ?? 0,
+        hasPin: Boolean(user.pinVerifierHash || user.pinHash),
       },
     };
   }
@@ -779,21 +796,62 @@ export class AuthService {
     return new Date(Date.now() + ms);
   }
 
+  private getRequiredSecret(name: "JWT_SECRET" | "JWT_REFRESH_SECRET"): string {
+    const value = process.env[name]?.trim();
+    if (!value) {
+      throw new Error(`${name} environment variable is required`);
+    }
+    return value;
+  }
+
+  private resolveSecretCandidates(
+    primaryName: "JWT_SECRET" | "JWT_REFRESH_SECRET",
+    previousName: "JWT_SECRET_PREVIOUS" | "JWT_REFRESH_SECRET_PREVIOUS",
+  ): string[] {
+    const primary = this.getRequiredSecret(primaryName);
+    const previous = (process.env[previousName] ?? "")
+      .split(",")
+      .map((secret) => secret.trim())
+      .filter((secret) => secret.length > 0 && secret !== primary);
+    return [primary, ...previous];
+  }
+
+  private verifyRefreshTokenSignature(refreshToken: string): void {
+    const candidates = this.resolveSecretCandidates(
+      "JWT_REFRESH_SECRET",
+      "JWT_REFRESH_SECRET_PREVIOUS",
+    );
+
+    for (const secret of candidates) {
+      try {
+        this.jwtService.verify(refreshToken, {
+          secret,
+          ignoreExpiration: true,
+        });
+        return;
+      } catch {
+        // Keep trying configured secrets during rotation grace window.
+      }
+    }
+
+    throw new UnauthorizedException("Refresh token expired or invalid");
+  }
+
   private deriveDeviceName(userAgent?: string | null): string | null {
     if (!userAgent) return null;
     const ua = userAgent.toLowerCase();
 
     if (ua.includes("dart/") || ua.includes("flutter")) {
-      if (ua.includes("android")) return "Flutter App on Android";
+      if (ua.includes("android")) return "Android Device";
       if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) {
-        return "Flutter App on iOS";
+        return "iOS Device";
       }
-      if (ua.includes("windows")) return "Flutter App on Windows";
+      if (ua.includes("windows")) return "Windows Device";
       if (ua.includes("mac os") || ua.includes("macintosh")) {
-        return "Flutter App on macOS";
+        return "macOS Device";
       }
-      if (ua.includes("linux")) return "Flutter App on Linux";
-      return "Flutter App";
+      if (ua.includes("linux")) return "Linux Device";
+      return "Unknown Device";
     }
 
     const os = ua.includes("windows")
@@ -827,5 +885,18 @@ export class AuthService {
                     : "Unknown Browser";
 
     return `${browser} on ${os}`;
+  }
+
+  private safeDecryptName(value?: string): string {
+    if (!value) return "[REDACTED]";
+    try {
+      return this.encryption.decrypt(value);
+    } catch (error) {
+      this.logger.error(
+        "Failed to decrypt user name payload",
+        error instanceof Error ? error.stack : undefined,
+      );
+      return "[REDACTED]";
+    }
   }
 }

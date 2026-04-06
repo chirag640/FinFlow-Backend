@@ -3,6 +3,24 @@ import { NextFunction, Request, Response } from "express";
 
 const logger = new Logger("HttpLogger");
 
+type LogLevel = "log" | "warn" | "error";
+
+type HttpLogRecord = {
+  timestamp: string;
+  level: "info" | "warn" | "error";
+  event: "http_request" | "http_response";
+  requestId: string;
+  method: string;
+  url: string;
+  path: string;
+  ip: string;
+  userAgent: string;
+  statusCode?: number;
+  durationMs?: number;
+  requestBody?: string;
+  responseBody?: string;
+};
+
 const SENSITIVE_KEYS = new Set([
   "password",
   "newPassword",
@@ -56,6 +74,23 @@ function capLogSize(text: string, maxChars = 4000): string {
   return `${text.slice(0, maxChars)}...[truncated ${text.length - maxChars} chars]`;
 }
 
+function serializeAndCap(payload: unknown, maxChars = 4000): string {
+  return capLogSize(serializePayload(payload), maxChars);
+}
+
+function emitStructuredLog(level: LogLevel, record: HttpLogRecord): void {
+  const line = serializeAndCap(record, 8_000);
+  if (level === "error") {
+    logger.error(line);
+    return;
+  }
+  if (level === "warn") {
+    logger.warn(line);
+    return;
+  }
+  logger.log(line);
+}
+
 export function httpLoggingMiddleware(
   req: Request,
   res: Response,
@@ -78,11 +113,22 @@ export function httpLoggingMiddleware(
     (req as Request & { requestId?: string }).requestId ??
     req.header("x-request-id") ??
     "n/a";
+  const ip = req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? req.ip;
+  const userAgent = req.header("user-agent") ?? "unknown";
 
   const redactedRequestBody = redactSensitive(req.body);
-  logger.log(
-    `[REQ] ${req.method} ${req.originalUrl} requestId=${requestId} body=${capLogSize(serializePayload(redactedRequestBody))}`,
-  );
+  emitStructuredLog("log", {
+    timestamp: new Date().toISOString(),
+    level: "info",
+    event: "http_request",
+    requestId,
+    method: req.method,
+    url: req.originalUrl,
+    path,
+    ip,
+    userAgent,
+    requestBody: serializeAndCap(redactedRequestBody),
+  });
 
   let responsePayload: unknown;
   const originalJson = res.json.bind(res);
@@ -103,22 +149,39 @@ export function httpLoggingMiddleware(
   res.on("finish", () => {
     const elapsedMs = Date.now() - startedAt;
     const redactedResponseBody = redactSensitive(responsePayload);
-    const responseText = capLogSize(serializePayload(redactedResponseBody));
-    const line =
-      `[RES] ${req.method} ${req.originalUrl} requestId=${requestId} ` +
-      `status=${res.statusCode} durationMs=${elapsedMs} body=${responseText}`;
+    const responseBody = serializeAndCap(redactedResponseBody);
+
+    const logRecord: HttpLogRecord = {
+      timestamp: new Date().toISOString(),
+      level:
+        res.statusCode >= 500
+          ? "error"
+          : res.statusCode >= 400
+            ? "warn"
+            : "info",
+      event: "http_response",
+      requestId,
+      method: req.method,
+      url: req.originalUrl,
+      path,
+      ip,
+      userAgent,
+      statusCode: res.statusCode,
+      durationMs: elapsedMs,
+      responseBody,
+    };
 
     if (res.statusCode >= 500) {
-      logger.error(line);
+      emitStructuredLog("error", logRecord);
       return;
     }
 
     if (res.statusCode >= 400) {
-      logger.warn(line);
+      emitStructuredLog("warn", logRecord);
       return;
     }
 
-    logger.log(line);
+    emitStructuredLog("log", logRecord);
   });
 
   next();

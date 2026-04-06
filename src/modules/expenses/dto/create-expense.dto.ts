@@ -10,6 +10,7 @@ import {
   IsUUID,
   MaxLength,
 } from "class-validator";
+import { IsDecimalScale } from "../../../common/validators/decimal-scale.validator";
 
 export class CreateExpenseDto {
   @ApiPropertyOptional({
@@ -23,6 +24,7 @@ export class CreateExpenseDto {
   @ApiProperty({ example: 450.0 })
   @IsNumber()
   @IsPositive()
+  @IsDecimalScale(2)
   amount: number;
 
   @ApiProperty({ example: "Lunch at Zomato" })

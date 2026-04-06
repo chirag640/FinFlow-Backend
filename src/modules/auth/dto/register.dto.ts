@@ -1,12 +1,12 @@
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsEmail,
-  IsString,
   IsOptional,
+  IsString,
   Matches,
-  MinLength,
   MaxLength,
+  MinLength,
 } from "class-validator";
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 export class RegisterDto {
   @ApiProperty({ example: "jane@example.com" })
@@ -41,9 +41,9 @@ export class RegisterDto {
   @IsString()
   @MinLength(8)
   @MaxLength(100)
-  @Matches(/^(?=.*[A-Z])(?=.*\d)/, {
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, {
     message:
-      "Password must include at least one uppercase letter and one number",
+      "Password must include lowercase, uppercase, and numeric characters",
   })
   password: string;
 }

@@ -10,10 +10,15 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  Max,
+  MaxLength,
   Min,
   ValidateIf,
   ValidateNested,
 } from "class-validator";
+import { IsDecimalScale } from "../../../common/validators/decimal-scale.validator";
+
+export const SYNC_PROTOCOL_VERSION = 1;
 
 // ── Push DTOs ─────────────────────────────────────────────────────────────────
 export class SyncExpenseDto {
@@ -22,11 +27,20 @@ export class SyncExpenseDto {
   @IsNumber()
   @ValidateIf((o: SyncExpenseDto) => !o.deleted)
   @IsPositive()
+  @IsDecimalScale(2)
   amount: number;
-  @IsString() description: string;
-  @IsString() category: string;
+  @MaxLength(120)
+  @IsString()
+  description: string;
+  @MaxLength(64)
+  @IsString()
+  category: string;
   @IsDateString() date: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsOptional()
+  @MaxLength(500)
+  @IsOptional()
+  @IsString()
+  notes?: string;
   @IsBoolean() isIncome: boolean;
   @IsBoolean() isRecurring: boolean;
   @IsOptional() @IsString() recurringRule?: string;
@@ -39,12 +53,14 @@ export class SyncBudgetDto {
 
   @IsOptional()
   @ValidateIf((o: SyncBudgetDto) => !o.deleted)
+  @MaxLength(64)
   @IsString()
   categoryKey?: string;
 
   @IsNumber()
   @ValidateIf((o: SyncBudgetDto) => !o.deleted)
   @IsPositive()
+  @IsDecimalScale(2)
   allocatedAmount: number;
 
   @IsOptional()
@@ -71,11 +87,13 @@ export class SyncGoalDto {
 
   @IsOptional()
   @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @MaxLength(120)
   @IsString()
   title?: string;
 
   @IsOptional()
   @ValidateIf((o: SyncGoalDto) => !o.deleted)
+  @MaxLength(16)
   @IsString()
   emoji?: string;
 
@@ -83,12 +101,14 @@ export class SyncGoalDto {
   @ValidateIf((o: SyncGoalDto) => !o.deleted)
   @IsNumber()
   @IsPositive()
+  @IsDecimalScale(2)
   targetAmount?: number;
 
   @IsOptional()
   @ValidateIf((o: SyncGoalDto) => !o.deleted)
   @IsNumber()
   @Min(0)
+  @IsDecimalScale(2)
   currentAmount?: number;
 
   @IsOptional()
@@ -106,6 +126,18 @@ export class SyncGoalDto {
 }
 
 export class SyncPushDto {
+  @ApiPropertyOptional({
+    description: "Sync payload contract version",
+    default: SYNC_PROTOCOL_VERSION,
+    minimum: SYNC_PROTOCOL_VERSION,
+    maximum: SYNC_PROTOCOL_VERSION,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(SYNC_PROTOCOL_VERSION)
+  @Max(SYNC_PROTOCOL_VERSION)
+  syncVersion?: number = SYNC_PROTOCOL_VERSION;
+
   @ApiPropertyOptional({ type: [SyncExpenseDto] })
   @IsOptional()
   @IsArray()
@@ -133,6 +165,18 @@ export class SyncPushDto {
 
 // ── Pull DTOs ─────────────────────────────────────────────────────────────────
 export class SyncPullDto {
+  @ApiPropertyOptional({
+    description: "Sync payload contract version",
+    default: SYNC_PROTOCOL_VERSION,
+    minimum: SYNC_PROTOCOL_VERSION,
+    maximum: SYNC_PROTOCOL_VERSION,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(SYNC_PROTOCOL_VERSION)
+  @Max(SYNC_PROTOCOL_VERSION)
+  syncVersion?: number = SYNC_PROTOCOL_VERSION;
+
   @ApiPropertyOptional({
     description: "ISO date string, last sync time. Omit for full sync.",
   })

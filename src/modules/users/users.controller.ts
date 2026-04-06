@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Patch,
+  Post,
   Query,
 } from "@nestjs/common";
 import {
@@ -14,10 +15,11 @@ import {
   ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
-import { IsOptional, Matches, IsString, ValidateIf } from "class-validator";
-import { UsersService } from "./users.service";
-import { UpdateProfileDto } from "./dto/update-profile.dto";
+import { Throttle } from "@nestjs/throttler";
+import { IsDefined, IsString, Matches, ValidateIf } from "class-validator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { UpdateProfileDto } from "./dto/update-profile.dto";
+import { UsersService } from "./users.service";
 
 class UpdatePinDto {
   /**
@@ -26,7 +28,7 @@ class UpdatePinDto {
    * - Legacy unsalted format: 64-char SHA-256 hex
    * - Current salted format: 32-char hex salt + ':' + 64-char SHA-256 hex
    */
-  @IsOptional()
+  @IsDefined({ message: "pinHash is required (use null to clear PIN)" })
   @ValidateIf((o) => o.pinHash !== null)
   @IsString()
   @Matches(/^(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{32}:[a-fA-F0-9]{64})$/, {
@@ -34,6 +36,12 @@ class UpdatePinDto {
       "pinHash must be 64-char SHA-256 hex or salted format (32-char hex salt:64-char hex hash)",
   })
   pinHash: string | null;
+}
+
+class VerifyPinDto {
+  @IsString()
+  @Matches(/^\d{4,8}$/, { message: "pin must be 4 to 8 digits" })
+  pin: string;
 }
 
 @ApiTags("users")
@@ -66,6 +74,13 @@ export class UsersController {
   @ApiOperation({ summary: "Set or update app PIN hash (legacy or salted)" })
   updatePin(@CurrentUser("id") userId: string, @Body() dto: UpdatePinDto) {
     return this.usersService.updatePin(userId, dto.pinHash);
+  }
+
+  @Post("pin/verify")
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @ApiOperation({ summary: "Verify app PIN with server lockout enforcement" })
+  verifyPin(@CurrentUser("id") userId: string, @Body() dto: VerifyPinDto) {
+    return this.usersService.verifyPin(userId, dto.pin);
   }
 
   @Delete("me")

@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Post,
   Req,
 } from "@nestjs/common";
@@ -25,6 +26,30 @@ import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { AuthSessionDto, RevokeSessionDto } from "./dto/session.dto";
 import { VerifyEmailDto } from "./dto/verify-email.dto";
 
+type SafeCurrentUser = {
+  id?: string;
+  name?: string;
+  email?: string;
+  username?: string | null;
+  avatarUrl?: string | null;
+  role?: string;
+  currency?: string;
+  emailVerified?: boolean;
+  monthlyBudget?: number;
+  hasPin?: boolean;
+  passwordHash?: string;
+  otpCode?: string | null;
+  otpExpiresAt?: Date | null;
+  passwordResetCode?: string | null;
+  passwordResetExpiresAt?: Date | null;
+  pinHash?: string | null;
+  pinVerifierHash?: string | null;
+  pinSalt?: string | null;
+  pinFailedAttempts?: number | null;
+  pinLockedUntil?: Date | null;
+  pinLastFailedAt?: Date | null;
+};
+
 class ResendOtpDto {
   @IsUUID()
   userId: string;
@@ -33,6 +58,8 @@ class ResendOtpDto {
 @ApiTags("auth")
 @Controller("auth")
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private authService: AuthService,
     private encryption: EncryptionService,
@@ -41,7 +68,7 @@ export class AuthController {
   // ── Register ───────────────────────────────────────────────────────────────
   @Public()
   @Post("register")
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
   @ApiOperation({ summary: "Register with email + password" })
   @ApiResponse({
     status: 201,
@@ -69,7 +96,7 @@ export class AuthController {
   @Public()
   @Post("verify-email")
   @HttpCode(HttpStatus.OK)
-  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @ApiOperation({ summary: "Verify email with 6-digit OTP" })
   @ApiResponse({ status: 200, type: AuthResponseDto })
   @ApiResponse({ status: 400, description: "Invalid or expired OTP" })
@@ -94,7 +121,7 @@ export class AuthController {
   @Public()
   @Post("resend-otp")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @Throttle({ default: { ttl: 3_600_000, limit: 3 } })
   @ApiOperation({ summary: "Resend email verification OTP" })
   @ApiResponse({ status: 204, description: "OTP re-sent" })
   resendOtp(@Body() body: ResendOtpDto): Promise<void> {
@@ -105,7 +132,7 @@ export class AuthController {
   @Public()
   @Post("forgot-password")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @Throttle({ default: { ttl: 3_600_000, limit: 3 } })
   @ApiOperation({ summary: "Send password reset code to email" })
   @ApiResponse({
     status: 204,
@@ -118,7 +145,7 @@ export class AuthController {
   @Public()
   @Post("reset-password")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({ summary: "Reset password using emailed 6-digit code" })
   @ApiResponse({ status: 204, description: "Password reset successful" })
   resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
@@ -154,15 +181,25 @@ export class AuthController {
   // ── Me ─────────────────────────────────────────────────────────────────────
   @Get("me")
   @ApiOperation({ summary: "Return current authenticated user" })
-  me(@CurrentUser() user: any) {
-    const safe: Record<string, any> = { ...user };
+  me(@CurrentUser() user: SafeCurrentUser) {
+    const safe: SafeCurrentUser = { ...user };
+    const hasPin = safe.hasPin ?? Boolean(safe.pinVerifierHash || safe.pinHash);
     delete safe.passwordHash;
     delete safe.otpCode;
     delete safe.otpExpiresAt;
     delete safe.passwordResetCode;
     delete safe.passwordResetExpiresAt;
-    safe.name = this.encryption.decrypt(safe.name);
-    return safe;
+    delete (safe as Record<string, unknown>).pinHash;
+    delete (safe as Record<string, unknown>).pinVerifierHash;
+    delete (safe as Record<string, unknown>).pinSalt;
+    delete (safe as Record<string, unknown>).pinFailedAttempts;
+    delete (safe as Record<string, unknown>).pinLockedUntil;
+    delete (safe as Record<string, unknown>).pinLastFailedAt;
+    safe.name = this.safeDecryptName(safe.name);
+    return {
+      ...safe,
+      hasPin,
+    };
   }
 
   @Get("sessions")
@@ -193,5 +230,18 @@ export class AuthController {
       userAgent,
       deviceName,
     };
+  }
+
+  private safeDecryptName(value?: string): string {
+    if (!value) return "[REDACTED]";
+    try {
+      return this.encryption.decrypt(value);
+    } catch (error) {
+      this.logger.error(
+        "Failed to decrypt current user name",
+        error instanceof Error ? error.stack : undefined,
+      );
+      return "[REDACTED]";
+    }
   }
 }

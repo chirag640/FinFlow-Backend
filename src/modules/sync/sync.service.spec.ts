@@ -46,6 +46,8 @@ describe("SyncService", () => {
         findOne: jest.fn(),
         updateOne: jest.fn(),
         deleteOne: jest.fn(),
+        countDocuments: jest.fn(async () => 0),
+        deleteMany: jest.fn(async () => ({ deletedCount: 0 })),
       },
     };
 
@@ -60,6 +62,9 @@ describe("SyncService", () => {
       recordPullError: jest.fn(),
       recordRetry: jest.fn(),
       recordIdempotentReplay: jest.fn(),
+      recordIdempotencyHit: jest.fn(),
+      recordIdempotencyMiss: jest.fn(),
+      recordIdempotencyPurge: jest.fn(),
       snapshot: jest.fn(() => ({ ok: true })),
     };
 
@@ -395,7 +400,63 @@ describe("SyncService", () => {
     expect(result.suggestedPullDelayMs).toBe(90_000);
   });
 
-  it("exposes telemetry snapshot", () => {
-    expect(service.getTelemetry()).toEqual({ ok: true });
+  it("exposes telemetry snapshot with idempotency details", async () => {
+    db.syncPushIdempotency.countDocuments.mockResolvedValue(7);
+
+    await expect(service.getTelemetry()).resolves.toEqual({
+      ok: true,
+      idempotency: {
+        ttlMs: expect.any(Number),
+        expiredBacklog: 7,
+      },
+      anomalies: [],
+    });
+  });
+
+  it("reports telemetry anomalies when thresholds are breached", async () => {
+    metrics.snapshot.mockReturnValue({
+      counters: {
+        pushTotal: 40,
+        pushErrors: 12,
+        pullTotal: 30,
+        pullErrors: 7,
+        retries: 25,
+      },
+      staleness: {
+        pullStalenessP95Ms: 900_000,
+      },
+    });
+    db.syncPushIdempotency.countDocuments.mockResolvedValue(200);
+
+    const telemetry = await service.getTelemetry();
+    const anomalyCodes = telemetry.anomalies.map(
+      (a: { code: string }) => a.code,
+    );
+
+    expect(anomalyCodes).toEqual(
+      expect.arrayContaining([
+        "sync_push_error_rate_high",
+        "sync_pull_error_rate_high",
+        "sync_retry_rate_high",
+        "sync_pull_staleness_high",
+        "sync_idempotency_backlog_high",
+      ]),
+    );
+  });
+
+  it("rejects unsupported sync version for push and pull", async () => {
+    await expect(
+      service.push(
+        "u1",
+        { syncVersion: 2, expenses: [], budgets: [], goals: [] },
+        undefined,
+        0,
+        2,
+      ),
+    ).rejects.toThrow("Unsupported syncVersion");
+
+    await expect(service.pull("u1", undefined, 2)).rejects.toThrow(
+      "Unsupported syncVersion",
+    );
   });
 });

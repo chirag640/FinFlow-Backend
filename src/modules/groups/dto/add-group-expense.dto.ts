@@ -13,6 +13,7 @@ import {
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
+import { IsDecimalScale } from "../../../common/validators/decimal-scale.validator";
 
 // ── Custom class-level validator ─────────────────────────────────────────────
 /**
@@ -49,13 +50,14 @@ function SharesSumMatchesAmount(validationOptions?: ValidationOptions) {
 
 export class ShareDto {
   @ApiProperty() @IsString() memberId: string;
-  @ApiProperty() @IsNumber() @IsPositive() amount: number;
+  @ApiProperty() @IsNumber() @IsPositive() @IsDecimalScale(2) amount: number;
 }
 
 export class AddGroupExpenseDto {
   @ApiProperty({ example: 1800.0 })
   @IsNumber()
   @IsPositive()
+  @IsDecimalScale(2)
   amount: number;
 
   @ApiProperty({ example: "Hotel booking" })

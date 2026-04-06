@@ -1,11 +1,21 @@
-import { IsOptional, IsString, IsInt, IsIn, Min, Max } from "class-validator";
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { Transform } from "class-transformer";
+import {
+  IsDateString,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from "class-validator";
 
 export class ExpenseQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUUID("4")
   cursor?: string;
 
   @ApiPropertyOptional({ default: 20 })
@@ -19,21 +29,29 @@ export class ExpenseQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(64)
   category?: string;
 
-  @ApiPropertyOptional({ description: "ISO date string, from" })
+  @ApiPropertyOptional({
+    description: "ISO 8601 date string, from",
+    example: "2024-01-01T00:00:00.000Z",
+  })
   @IsOptional()
-  @IsString()
+  @IsDateString({}, { message: "from must be a valid ISO 8601 date string" })
   from?: string;
 
-  @ApiPropertyOptional({ description: "ISO date string, to" })
+  @ApiPropertyOptional({
+    description: "ISO 8601 date string, to",
+    example: "2024-12-31T23:59:59.999Z",
+  })
   @IsOptional()
-  @IsString()
+  @IsDateString({}, { message: "to must be a valid ISO 8601 date string" })
   to?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(120)
   search?: string;
 
   @ApiPropertyOptional({

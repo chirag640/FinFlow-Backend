@@ -47,6 +47,8 @@ describe("SyncService chaos scenarios", () => {
         findOne: jest.fn(),
         updateOne: jest.fn(),
         deleteOne: jest.fn(),
+        countDocuments: jest.fn(async () => 0),
+        deleteMany: jest.fn(async () => ({ deletedCount: 0 })),
       },
     };
 
@@ -61,6 +63,9 @@ describe("SyncService chaos scenarios", () => {
       recordPullError: jest.fn(),
       recordRetry: jest.fn(),
       recordIdempotentReplay: jest.fn(),
+      recordIdempotencyHit: jest.fn(),
+      recordIdempotencyMiss: jest.fn(),
+      recordIdempotencyPurge: jest.fn(),
       snapshot: jest.fn(() => ({ ok: true })),
     };
 

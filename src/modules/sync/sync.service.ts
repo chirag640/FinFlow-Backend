@@ -1,6 +1,13 @@
-import { ConflictException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+} from "@nestjs/common";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import { createHash, randomUUID } from "crypto";
 import { AnyBulkWriteOperation } from "mongodb";
+import { SYNC_CONFIG } from "../../common/constants";
 import { EncryptionService } from "../../common/services/encryption.service";
 import { DatabaseService } from "../../database/database.service";
 import {
@@ -10,7 +17,7 @@ import {
   SyncPushIdempotencyDoc,
   UserDoc,
 } from "../../database/database.types";
-import { SyncPushDto } from "./dto/sync.dto";
+import { SYNC_PROTOCOL_VERSION, SyncPushDto } from "./dto/sync.dto";
 import { SyncMetricsService } from "./sync-metrics.service";
 
 type EntityAck = {
@@ -27,6 +34,7 @@ type SyncPushAck = {
 };
 
 type SyncPushResponse = {
+  syncVersion: number;
   synced: {
     expenses: number;
     budgets: number;
@@ -49,6 +57,7 @@ type SyncUserProjection = Pick<
 >;
 
 type SyncPullResponse = {
+  syncVersion: number;
   expenses: Array<Record<string, unknown>>;
   budgets: Array<Record<string, unknown>>;
   goals: Array<Record<string, unknown>>;
@@ -66,16 +75,46 @@ type SyncPullResponse = {
   unchanged?: boolean;
 };
 
+type TelemetryAnomaly = {
+  code: string;
+  severity: "warning" | "critical";
+  message: string;
+  observed: number;
+  threshold: number;
+  unit: "ratio" | "ms" | "count";
+};
+
 @Injectable()
 export class SyncService {
-  private static readonly PUSH_CHUNK_SIZE = 200;
-  private static readonly IDEMPOTENCY_TTL_MS = 10 * 60_000;
-  private static readonly IDEMPOTENCY_WAIT_MS = 2500;
-  private static readonly IDEMPOTENCY_POLL_MS = 100;
-  private static readonly PULL_CACHE_TTL_MS = 15_000;
-  private static readonly PULL_WATERMARK_TTL_MS = 45_000;
-  private static readonly PULL_SUGGESTED_DELAY_ACTIVE_MS = 20_000;
-  private static readonly PULL_SUGGESTED_DELAY_IDLE_MS = 90_000;
+  private readonly logger = new Logger(SyncService.name);
+  private static readonly SUPPORTED_SYNC_VERSION = SYNC_PROTOCOL_VERSION;
+
+  private static readonly PUSH_CHUNK_SIZE = SYNC_CONFIG.PUSH_CHUNK_SIZE;
+  private static readonly IDEMPOTENCY_TTL_MS = SYNC_CONFIG.IDEMPOTENCY_TTL_MS;
+  private static readonly IDEMPOTENCY_WAIT_MS = SYNC_CONFIG.IDEMPOTENCY_WAIT_MS;
+  private static readonly IDEMPOTENCY_POLL_MS = SYNC_CONFIG.IDEMPOTENCY_POLL_MS;
+  private static readonly PULL_CACHE_TTL_MS = SYNC_CONFIG.PULL_CACHE_TTL_MS;
+  private static readonly PULL_WATERMARK_TTL_MS =
+    SYNC_CONFIG.PULL_WATERMARK_TTL_MS;
+  private static readonly PULL_SUGGESTED_DELAY_ACTIVE_MS =
+    SYNC_CONFIG.PULL_SUGGESTED_DELAY_ACTIVE_MS;
+  private static readonly PULL_SUGGESTED_DELAY_IDLE_MS =
+    SYNC_CONFIG.PULL_SUGGESTED_DELAY_IDLE_MS;
+  private static readonly PULL_CACHE_MAX_ENTRIES =
+    SYNC_CONFIG.PULL_CACHE_MAX_ENTRIES;
+  private static readonly PULL_WATERMARK_MAX_ENTRIES =
+    SYNC_CONFIG.PULL_WATERMARK_MAX_ENTRIES;
+  private static readonly ANOMALY_MIN_SAMPLE_SIZE =
+    SYNC_CONFIG.ANOMALY_MIN_SAMPLE_SIZE;
+  private static readonly ANOMALY_PUSH_ERROR_RATE =
+    SYNC_CONFIG.ANOMALY_PUSH_ERROR_RATE;
+  private static readonly ANOMALY_PULL_ERROR_RATE =
+    SYNC_CONFIG.ANOMALY_PULL_ERROR_RATE;
+  private static readonly ANOMALY_RETRY_RATE = SYNC_CONFIG.ANOMALY_RETRY_RATE;
+  private static readonly ANOMALY_PULL_STALENESS_P95_MS =
+    SYNC_CONFIG.ANOMALY_PULL_STALENESS_P95_MS;
+  private static readonly ANOMALY_IDEMPOTENCY_BACKLOG =
+    SYNC_CONFIG.ANOMALY_IDEMPOTENCY_BACKLOG;
 
   private readonly pullCache = new Map<
     string,
@@ -156,8 +195,22 @@ export class SyncService {
     );
   }
 
-  private _pullCacheKey(userId: string, sinceDate: Date): string {
-    return `${userId}:${sinceDate.toISOString()}`;
+  private _pullCacheKey(
+    userId: string,
+    sinceDate: Date,
+    syncVersion: number,
+  ): string {
+    return `${userId}:${syncVersion}:${sinceDate.toISOString()}`;
+  }
+
+  private _resolveSyncVersion(syncVersion?: number): number {
+    const resolved = syncVersion ?? SyncService.SUPPORTED_SYNC_VERSION;
+    if (resolved !== SyncService.SUPPORTED_SYNC_VERSION) {
+      throw new BadRequestException(
+        `Unsupported syncVersion ${resolved}. Supported version: ${SyncService.SUPPORTED_SYNC_VERSION}`,
+      );
+    }
+    return resolved;
   }
 
   private _getPullCache(key: string): SyncPullResponse | null {
@@ -171,6 +224,12 @@ export class SyncService {
   }
 
   private _setPullCache(key: string, response: SyncPullResponse): void {
+    if (this.pullCache.size >= SyncService.PULL_CACHE_MAX_ENTRIES) {
+      const oldestKey = this.pullCache.keys().next().value as
+        | string
+        | undefined;
+      if (oldestKey) this.pullCache.delete(oldestKey);
+    }
     this.pullCache.set(key, {
       expiresAt: Date.now() + SyncService.PULL_CACHE_TTL_MS,
       response,
@@ -192,6 +251,15 @@ export class SyncService {
   }
 
   private _markUserMutation(userId: string, at = new Date()): void {
+    if (
+      !this.pullWatermarks.has(userId) &&
+      this.pullWatermarks.size >= SyncService.PULL_WATERMARK_MAX_ENTRIES
+    ) {
+      const oldestKey = this.pullWatermarks.keys().next().value as
+        | string
+        | undefined;
+      if (oldestKey) this.pullWatermarks.delete(oldestKey);
+    }
     const atMs = at.getTime();
     this.pullWatermarks.set(userId, {
       latestMutationAtMs: atMs,
@@ -203,6 +271,15 @@ export class SyncService {
     userId: string,
     latestMutationAt: Date | null,
   ): void {
+    if (
+      !this.pullWatermarks.has(userId) &&
+      this.pullWatermarks.size >= SyncService.PULL_WATERMARK_MAX_ENTRIES
+    ) {
+      const oldestKey = this.pullWatermarks.keys().next().value as
+        | string
+        | undefined;
+      if (oldestKey) this.pullWatermarks.delete(oldestKey);
+    }
     const nowMs = Date.now();
     this.pullWatermarks.set(userId, {
       latestMutationAtMs: latestMutationAt?.getTime() ?? 0,
@@ -227,8 +304,9 @@ export class SyncService {
     return watermark;
   }
 
-  private _unchangedPullResponse(): SyncPullResponse {
+  private _unchangedPullResponse(syncVersion: number): SyncPullResponse {
     return {
+      syncVersion,
       expenses: [],
       budgets: [],
       goals: [],
@@ -239,11 +317,16 @@ export class SyncService {
     };
   }
 
-  private _pushRequestHash(userId: string, dto: SyncPushDto): string {
+  private _pushRequestHash(
+    userId: string,
+    dto: SyncPushDto,
+    syncVersion: number,
+  ): string {
     return createHash("sha256")
       .update(
         JSON.stringify({
           userId,
+          syncVersion,
           expenses: dto.expenses ?? [],
           budgets: dto.budgets ?? [],
           goals: dto.goals ?? [],
@@ -271,6 +354,7 @@ export class SyncService {
 
     try {
       await this.db.syncPushIdempotency.insertOne(doc);
+      this.metrics.recordIdempotencyMiss();
       return null;
     } catch (error: unknown) {
       const mongoErr = error as { code?: number };
@@ -293,6 +377,7 @@ export class SyncService {
       }
 
       if (existing.status === "completed" && existing.response) {
+        this.metrics.recordIdempotencyHit();
         this.metrics.recordIdempotentReplay();
         return existing.response as SyncPushResponse;
       }
@@ -313,6 +398,7 @@ export class SyncService {
           );
         }
         if (polled?.status === "completed" && polled.response) {
+          this.metrics.recordIdempotencyHit();
           this.metrics.recordIdempotentReplay();
           return polled.response as SyncPushResponse;
         }
@@ -361,7 +447,11 @@ export class SyncService {
     dto: SyncPushDto,
     idempotencyKey?: string,
     retryCount = 0,
+    syncVersion?: number,
   ) {
+    const protocolVersion = this._resolveSyncVersion(
+      syncVersion ?? dto.syncVersion,
+    );
     const startedAt = Date.now();
     const queueDepth =
       (dto.expenses?.length ?? 0) +
@@ -372,7 +462,7 @@ export class SyncService {
     }
 
     const requestHash = idempotencyKey
-      ? this._pushRequestHash(userId, dto)
+      ? this._pushRequestHash(userId, dto, protocolVersion)
       : null;
     if (idempotencyKey && requestHash) {
       const replay = await this._resolveIdempotencyReplay(
@@ -630,6 +720,7 @@ export class SyncService {
       }
 
       const response: SyncPushResponse = {
+        syncVersion: protocolVersion,
         synced: results,
         ack,
         timestamp: new Date().toISOString(),
@@ -661,25 +752,161 @@ export class SyncService {
     }
   }
 
-  getTelemetry() {
-    return this.metrics.snapshot();
+  async getTelemetry() {
+    const snapshot = this.metrics.snapshot() as Record<string, unknown>;
+    const expiredBacklog = await this.db.syncPushIdempotency.countDocuments({
+      expiresAt: { $lte: new Date() },
+    });
+
+    const anomalies = this.detectTelemetryAnomalies(snapshot, expiredBacklog);
+    if (anomalies.length > 0) {
+      this.logger.warn(
+        `Sync telemetry anomalies detected: ${JSON.stringify(
+          anomalies.map((a) => ({
+            code: a.code,
+            severity: a.severity,
+            observed: a.observed,
+            threshold: a.threshold,
+          })),
+        )}`,
+      );
+    }
+
+    return {
+      ...snapshot,
+      idempotency: {
+        ttlMs: SyncService.IDEMPOTENCY_TTL_MS,
+        expiredBacklog,
+      },
+      anomalies,
+    };
+  }
+
+  private asNumber(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  }
+
+  private detectTelemetryAnomalies(
+    snapshot: Record<string, unknown>,
+    expiredBacklog: number,
+  ): TelemetryAnomaly[] {
+    const counters =
+      (snapshot.counters as Record<string, unknown> | undefined) ?? {};
+    const staleness =
+      (snapshot.staleness as Record<string, unknown> | undefined) ?? {};
+
+    const pushTotal = this.asNumber(counters.pushTotal);
+    const pushErrors = this.asNumber(counters.pushErrors);
+    const pullTotal = this.asNumber(counters.pullTotal);
+    const pullErrors = this.asNumber(counters.pullErrors);
+    const retries = this.asNumber(counters.retries);
+    const pullStalenessP95Ms = this.asNumber(staleness.pullStalenessP95Ms);
+
+    const anomalies: TelemetryAnomaly[] = [];
+
+    if (pushTotal >= SyncService.ANOMALY_MIN_SAMPLE_SIZE) {
+      const pushErrorRate = pushErrors / pushTotal;
+      if (pushErrorRate >= SyncService.ANOMALY_PUSH_ERROR_RATE) {
+        anomalies.push({
+          code: "sync_push_error_rate_high",
+          severity: "critical",
+          message: "Push error rate is above threshold",
+          observed: Number(pushErrorRate.toFixed(4)),
+          threshold: SyncService.ANOMALY_PUSH_ERROR_RATE,
+          unit: "ratio",
+        });
+      }
+    }
+
+    if (pullTotal >= SyncService.ANOMALY_MIN_SAMPLE_SIZE) {
+      const pullErrorRate = pullErrors / pullTotal;
+      if (pullErrorRate >= SyncService.ANOMALY_PULL_ERROR_RATE) {
+        anomalies.push({
+          code: "sync_pull_error_rate_high",
+          severity: "critical",
+          message: "Pull error rate is above threshold",
+          observed: Number(pullErrorRate.toFixed(4)),
+          threshold: SyncService.ANOMALY_PULL_ERROR_RATE,
+          unit: "ratio",
+        });
+      }
+    }
+
+    const totalSyncOps = pushTotal + pullTotal;
+    if (totalSyncOps >= SyncService.ANOMALY_MIN_SAMPLE_SIZE) {
+      const retryRate = retries / totalSyncOps;
+      if (retryRate >= SyncService.ANOMALY_RETRY_RATE) {
+        anomalies.push({
+          code: "sync_retry_rate_high",
+          severity: "warning",
+          message: "Retry rate is above threshold",
+          observed: Number(retryRate.toFixed(4)),
+          threshold: SyncService.ANOMALY_RETRY_RATE,
+          unit: "ratio",
+        });
+      }
+    }
+
+    if (pullStalenessP95Ms >= SyncService.ANOMALY_PULL_STALENESS_P95_MS) {
+      anomalies.push({
+        code: "sync_pull_staleness_high",
+        severity: "warning",
+        message: "Pull staleness p95 is above threshold",
+        observed: pullStalenessP95Ms,
+        threshold: SyncService.ANOMALY_PULL_STALENESS_P95_MS,
+        unit: "ms",
+      });
+    }
+
+    if (expiredBacklog >= SyncService.ANOMALY_IDEMPOTENCY_BACKLOG) {
+      anomalies.push({
+        code: "sync_idempotency_backlog_high",
+        severity: "critical",
+        message: "Expired idempotency backlog is above threshold",
+        observed: expiredBacklog,
+        threshold: SyncService.ANOMALY_IDEMPOTENCY_BACKLOG,
+        unit: "count",
+      });
+    }
+
+    return anomalies;
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async purgeExpiredIdempotencyRecords(): Promise<void> {
+    try {
+      const result = await this.db.syncPushIdempotency.deleteMany({
+        expiresAt: { $lte: new Date() },
+      });
+      const purged = result.deletedCount ?? 0;
+      if (purged > 0) {
+        this.metrics.recordIdempotencyPurge(purged);
+        this.logger.warn(`Purged ${purged} expired sync idempotency records`);
+      }
+    } catch (error) {
+      this.logger.error(
+        "Failed to purge expired sync idempotency records",
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   // ── Pull (server → client) ─────────────────────────────────────────────────
-  async pull(userId: string, since?: string) {
+  async pull(userId: string, since?: string, syncVersion?: number) {
+    const protocolVersion = this._resolveSyncVersion(syncVersion);
     const startedAt = Date.now();
     const parsedSince = since ? new Date(since) : null;
     const hasValidSince = !!(
       parsedSince && !Number.isNaN(parsedSince.getTime())
     );
     const sinceDate = hasValidSince ? parsedSince! : new Date(0);
-    const cacheKey = this._pullCacheKey(userId, sinceDate);
+    const cacheKey = this._pullCacheKey(userId, sinceDate, protocolVersion);
 
     if (hasValidSince) {
       const watermark = this._getPullWatermark(userId);
       if (watermark && sinceDate.getTime() >= watermark.latestMutationAtMs) {
         const stalenessMs = Date.now() - sinceDate.getTime();
-        const unchangedResponse = this._unchangedPullResponse();
+        const unchangedResponse = this._unchangedPullResponse(protocolVersion);
         this.metrics.recordPullSuccess(
           Date.now() - startedAt,
           stalenessMs,
@@ -709,7 +936,12 @@ export class SyncService {
       return inFlight;
     }
 
-    const request = this._pullFresh(userId, sinceDate, hasValidSince);
+    const request = this._pullFresh(
+      userId,
+      sinceDate,
+      hasValidSince,
+      protocolVersion,
+    );
     this.inFlightPulls.set(cacheKey, request);
     try {
       const response = await request;
@@ -724,6 +956,7 @@ export class SyncService {
     userId: string,
     sinceDate: Date,
     hasValidSince: boolean,
+    syncVersion: number,
   ): Promise<SyncPullResponse> {
     const startedAt = Date.now();
 
@@ -787,7 +1020,7 @@ export class SyncService {
             true,
             userId,
           );
-          return this._unchangedPullResponse();
+          return this._unchangedPullResponse(syncVersion);
         }
       }
 
@@ -844,7 +1077,7 @@ export class SyncService {
           true,
           userId,
         );
-        return this._unchangedPullResponse();
+        return this._unchangedPullResponse(syncVersion);
       }
 
       this.metrics.recordPullSuccess(
@@ -855,6 +1088,7 @@ export class SyncService {
       );
 
       return {
+        syncVersion,
         expenses: expenses.map((e) => ({
           ...e,
           id: e._id,

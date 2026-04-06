@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 import { Collection, Db, MongoClient, MongoClientOptions } from "mongodb";
 import {
   BudgetDoc,
+  EmailOutboxDoc,
   ExpenseDoc,
   GoalDoc,
   GroupDoc,
@@ -84,6 +85,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   get syncPushIdempotency(): Collection<SyncPushIdempotencyDoc> {
     return this.db.collection<SyncPushIdempotencyDoc>("SyncPushIdempotency");
   }
+  get emailOutbox(): Collection<EmailOutboxDoc> {
+    return this.db.collection<EmailOutboxDoc>("EmailOutbox");
+  }
 
   // ── Index bootstrap ─────────────────────────────────────────────────────────
   private async _ensureIndexes() {
@@ -153,6 +157,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     await safe(() => this.expenses.createIndex({ deletedAt: 1 }));
     await safe(() => this.expenses.createIndex({ userId: 1, date: 1 }));
     await safe(() => this.expenses.createIndex({ userId: 1, updatedAt: 1 }));
+    // Compound index for common query pattern: user's non-deleted expenses by date
+    await safe(() =>
+      this.expenses.createIndex({ userId: 1, deletedAt: 1, date: -1 }),
+    );
 
     await safe(() => this.budgets.createIndex({ userId: 1 }));
     await safe(() =>
@@ -175,6 +183,15 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
     await safe(() => this.groupExpenses.createIndex({ groupId: 1 }));
     await safe(() => this.groupExpenses.createIndex({ deletedAt: 1 }));
+    await safe(() =>
+      this.groupExpenses.createIndex({ groupId: 1, deletedAt: 1, date: -1 }),
+    );
+    await safe(() =>
+      this.groupExpenses.createIndex({ groupId: 1, deletedAt: 1, createdAt: -1 }),
+    );
+    await safe(() =>
+      this.groupExpenses.createIndex({ groupId: 1, deletedAt: 1, amount: -1 }),
+    );
 
     await safe(() =>
       this.syncPushIdempotency.createIndex(
@@ -184,6 +201,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     );
     await safe(() =>
       this.syncPushIdempotency.createIndex(
+        { expiresAt: 1 },
+        { expireAfterSeconds: 0 },
+      ),
+    );
+
+    // Email outbox indexes
+    await safe(() =>
+      this.emailOutbox.createIndex({ status: 1, nextRetryAt: 1 }),
+    );
+    await safe(() => this.emailOutbox.createIndex({ userId: 1 }));
+    await safe(() =>
+      this.emailOutbox.createIndex(
         { expiresAt: 1 },
         { expireAfterSeconds: 0 },
       ),

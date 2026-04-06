@@ -26,7 +26,12 @@ export interface UserDoc {
   otpLastSentAt?: Date | null;
   passwordResetCode?: string | null;
   passwordResetExpiresAt?: Date | null;
-  pinHash?: string | null; // SHA-256 of the user's 4-digit PIN; null = no PIN set
+  pinHash?: string | null; // Legacy migration-only field
+  pinSalt?: string | null;
+  pinVerifierHash?: string | null; // bcrypt hash of canonical PIN hash payload
+  pinFailedAttempts?: number | null;
+  pinLockedUntil?: Date | null;
+  pinLastFailedAt?: Date | null;
 }
 
 export interface RefreshTokenDoc {
@@ -61,6 +66,25 @@ export interface NotificationEventDoc {
   key: string;
   type: string;
   userId: string;
+}
+
+export interface EmailOutboxDoc {
+  _id: string;
+  createdAt: Date;
+  updatedAt: Date;
+
+  to: string;
+  subject: string;
+  html: string;
+  purpose: string;
+  userId?: string | null;
+
+  status: "pending" | "sent" | "failed";
+  attempts: number;
+  lastAttemptAt?: Date | null;
+  lastError?: string | null;
+  nextRetryAt?: Date | null;
+  expiresAt: Date;
 }
 
 export interface ExpenseDoc {

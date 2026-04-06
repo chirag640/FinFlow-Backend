@@ -11,6 +11,7 @@ import {
   Max,
 } from "class-validator";
 import { ApiPropertyOptional } from "@nestjs/swagger";
+import { IsDecimalScale } from "../../../common/validators/decimal-scale.validator";
 
 export class UpdateProfileDto {
   @ApiPropertyOptional({
@@ -57,5 +58,6 @@ export class UpdateProfileDto {
   @IsNumber()
   @Min(0)
   @Max(100_000_000)
+  @IsDecimalScale(2)
   monthlyBudget?: number;
 }

@@ -13,9 +13,10 @@ export class ResetPasswordDto {
   @IsEmail()
   email: string;
 
-  @ApiProperty({ example: "482910", description: "6-digit reset code" })
+  @ApiProperty({ example: "482910", description: "6-digit numeric code" })
   @IsString()
   @Length(6, 6)
+  @Matches(/^\d{6}$/, { message: 'Code must be exactly 6 digits' })
   code: string;
 
   @ApiProperty({ example: "NewPassword1", minLength: 8 })

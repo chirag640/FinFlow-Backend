@@ -10,6 +10,7 @@ export class AuthUserDto {
   @ApiProperty() currency: string;
   @ApiProperty() emailVerified: boolean;
   @ApiProperty({ nullable: true }) monthlyBudget: number | null;
+  @ApiProperty() hasPin: boolean;
 }
 
 export class AuthResponseDto {

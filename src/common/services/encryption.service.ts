@@ -46,7 +46,9 @@ export class EncryptionService implements OnModuleInit {
     if (!stored || !stored.includes(":")) return stored; // not encrypted (legacy)
     try {
       const parts = stored.split(":");
-      if (parts.length !== 3) return stored;
+      if (parts.length !== 3) {
+        throw new Error("Encrypted payload has invalid format");
+      }
       const [ivHex, tagB64, ciphertext] = parts;
       const iv = Buffer.from(ivHex, "hex");
       const tag = Buffer.from(tagB64, "base64");
@@ -55,34 +57,38 @@ export class EncryptionService implements OnModuleInit {
       let dec = decipher.update(ciphertext, "base64", "utf8");
       dec += decipher.final("utf8");
       return dec;
-    } catch {
-      return stored; // corrupted/wrong key → return raw (fallback)
+    } catch (error) {
+      this.logger.error(
+        "Failed to decrypt encrypted payload",
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new Error("Unable to decrypt protected data");
     }
   }
 
   // Helpers for applying a list of field names to an object
-  encryptFields<T extends Record<string, any>>(obj: T, fields: (keyof T)[]): T {
+  encryptFields<T extends Record<string, unknown>>(obj: T, fields: (keyof T)[]): T {
     const copy = { ...obj } as T;
     for (const f of fields) {
       if (copy[f] != null && typeof copy[f] === "string") {
-        (copy as any)[f] = this.encrypt(copy[f] as string);
+        copy[f] = this.encrypt(copy[f] as string) as T[keyof T];
       }
     }
     return copy;
   }
 
-  decryptFields<T extends Record<string, any>>(obj: T, fields: (keyof T)[]): T {
+  decryptFields<T extends Record<string, unknown>>(obj: T, fields: (keyof T)[]): T {
     if (!obj) return obj;
     const copy = { ...obj } as T;
     for (const f of fields) {
       if (copy[f] != null && typeof copy[f] === "string") {
-        (copy as any)[f] = this.decrypt(copy[f] as string);
+        copy[f] = this.decrypt(copy[f] as string) as T[keyof T];
       }
     }
     return copy;
   }
 
-  decryptMany<T extends Record<string, any>>(
+  decryptMany<T extends Record<string, unknown>>(
     items: T[],
     fields: (keyof T)[],
   ): T[] {

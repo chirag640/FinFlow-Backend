@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { IsNumber, IsPositive, IsString } from "class-validator";
@@ -15,6 +16,7 @@ import { GroupsService } from "./groups.service";
 import { CreateGroupDto } from "./dto/create-group.dto";
 import { AddGroupExpenseDto } from "./dto/add-group-expense.dto";
 import { AddMemberDto } from "./dto/add-member.dto";
+import { GroupExpenseQueryDto } from "./dto/group-expense-query.dto";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 class SettleUpDto {
@@ -100,6 +102,16 @@ export class GroupsController {
   @ApiOperation({ summary: "Get simplified debt settlements" })
   getSettlements(@CurrentUser("id") uid: string, @Param("id") id: string) {
     return this.svc.getSettlements(id, uid);
+  }
+
+  @Get(":id/expenses")
+  @ApiOperation({ summary: "Get paginated group expenses" })
+  getGroupExpenses(
+    @CurrentUser("id") uid: string,
+    @Param("id") id: string,
+    @Query() query: GroupExpenseQueryDto,
+  ) {
+    return this.svc.getGroupExpenses(id, uid, query);
   }
 
   @Post(":id/settle")

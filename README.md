@@ -16,6 +16,7 @@ FinFlow Backend is a NestJS REST API that powers authentication, expenses, budge
 - Base path: `/api/v1`
 - Swagger docs (non-production): `/api/docs`
 - Health check: `/api/v1/health`
+- FCM health check: `/api/v1/health/fcm`
 
 ## Core Features
 
@@ -48,6 +49,52 @@ cp .env.example .env
 - `RESEND_API_KEY`
 - `EMAIL_FROM`
 - `FIREBASE_SERVICE_ACCOUNT_JSON` (or `FIREBASE_SERVICE_ACCOUNT_BASE64`) for FCM push delivery
+
+## JWT Secret Rotation (Baseline)
+
+FinFlow supports a grace-window rotation model for JWT signing secrets.
+
+- Active access secret: `JWT_SECRET`
+- Previous access secret(s): `JWT_SECRET_PREVIOUS` (comma-separated)
+- Active refresh secret: `JWT_REFRESH_SECRET`
+- Previous refresh secret(s): `JWT_REFRESH_SECRET_PREVIOUS` (comma-separated)
+
+Recommended rotation flow:
+
+1. Generate a new active secret and move the old active value into the matching `*_PREVIOUS` variable.
+2. Deploy backend with both active and previous values set.
+3. Wait at least one full token lifetime (`JWT_EXPIRES_IN` for access, `JWT_REFRESH_EXPIRES_IN` for refresh).
+4. Remove old values from `*_PREVIOUS` and deploy again.
+
+Notes:
+
+- Access token validation accepts current and previous access secrets.
+- Refresh rotation also validates token signatures against current and previous refresh secrets before session lookup.
+- Keep the grace window short and avoid storing more than a small number of previous keys.
+
+## API Version Lifecycle Policy
+
+FinFlow emits API lifecycle headers on versioned routes (`/api/:version/*`) to support deprecation communication and client migrations.
+
+Environment variables:
+
+- `API_CURRENT_VERSION` (default: `v1`)
+- `API_SUPPORTED_VERSIONS` (comma-separated)
+- `API_DEPRECATED_VERSIONS` (comma-separated)
+- `API_SUNSET_VERSIONS` (comma-separated)
+- `API_VERSION_DEPRECATION_DATE` (RFC3339 timestamp, optional)
+- `API_VERSION_SUNSET_DATE` (RFC3339 timestamp, optional)
+- `API_LIFECYCLE_POLICY_URL` (default: `/api/docs`)
+
+Response headers include:
+
+- `x-api-version`
+- `x-api-current-version`
+- `x-api-supported-versions`
+- `x-api-lifecycle-stage` (`active`, `deprecated`, `sunset`, or `unsupported`)
+- `x-api-lifecycle-policy`
+
+For deprecated/sunset versions, the API additionally emits `Deprecation`, optional `Sunset`, and `Warning` headers.
 
 ## Push Notifications (FCM)
 
