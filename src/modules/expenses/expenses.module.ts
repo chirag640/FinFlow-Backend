@@ -6,6 +6,6 @@ import { ReceiptStorageService } from "./receipt-storage.service";
 @Module({
   controllers: [ExpensesController],
   providers: [ExpensesService, ReceiptStorageService],
-  exports: [ExpensesService],
+  exports: [ExpensesService, ReceiptStorageService],
 })
 export class ExpensesModule {}

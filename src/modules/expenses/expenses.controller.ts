@@ -31,8 +31,12 @@ import { RECEIPT_CONFIG } from "../../common/constants";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
+import { ExpenseBatchOperationDto } from "./dto/expense-batch.dto";
+import { ExpenseDuplicateCheckDto } from "./dto/expense-duplicate-check.dto";
 import { ExpenseQueryDto } from "./dto/expense-query.dto";
 import {
+  ExpenseBatchOperationResponseDto,
+  ExpenseDuplicateCheckResponseDto,
   ExpensePageResponseDto,
   ExpenseResponseDto,
   ExpenseSummaryResponseDto,
@@ -77,6 +81,30 @@ export class ExpensesController {
   @ApiOkResponse({ type: ExpenseSummaryResponseDto })
   summary(@CurrentUser("id") uid: string, @Query() query: MonthYearQueryDto) {
     return this.svc.getSummary(uid, query.month, query.year);
+  }
+
+  @Post("duplicates/check")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Check potential duplicate expenses" })
+  @ApiBody({ type: ExpenseDuplicateCheckDto })
+  @ApiOkResponse({ type: ExpenseDuplicateCheckResponseDto })
+  checkDuplicates(
+    @CurrentUser("id") uid: string,
+    @Body() dto: ExpenseDuplicateCheckDto,
+  ) {
+    return this.svc.checkPotentialDuplicates(uid, dto);
+  }
+
+  @Post("batch")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Apply batch operations to expenses" })
+  @ApiBody({ type: ExpenseBatchOperationDto })
+  @ApiOkResponse({ type: ExpenseBatchOperationResponseDto })
+  batchOperation(
+    @CurrentUser("id") uid: string,
+    @Body() dto: ExpenseBatchOperationDto,
+  ) {
+    return this.svc.applyBatchOperation(uid, dto);
   }
 
   @Post("receipts/upload-intent")

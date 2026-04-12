@@ -48,6 +48,13 @@ type ReceiptFileResult =
       redirectUrl: string;
     };
 
+type ReceiptStorageHealthStatus = {
+  receiptStorageProvider: "local" | "s3";
+  receiptStorageConfigured: boolean;
+  signedReadUrls: boolean;
+  s3BucketConfigured: boolean;
+};
+
 @Injectable()
 export class ReceiptStorageService {
   private static readonly STORAGE_KEY_REGEX =
@@ -178,6 +185,20 @@ export class ReceiptStorageService {
       mode: "local",
       absolutePath,
       mimeType: this.mimeTypeFromStorageKey(storageKey),
+    };
+  }
+
+  getHealthStatus(): ReceiptStorageHealthStatus {
+    const isS3 = this.storageProvider === "s3";
+    const s3BucketConfigured = Boolean(this.s3Bucket);
+
+    return {
+      receiptStorageProvider: this.storageProvider,
+      receiptStorageConfigured: isS3
+        ? Boolean(this.s3Client) && s3BucketConfigured
+        : true,
+      signedReadUrls: RECEIPT_CONFIG.SIGN_READ_URLS,
+      s3BucketConfigured,
     };
   }
 

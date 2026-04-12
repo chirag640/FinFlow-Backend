@@ -130,3 +130,34 @@ export class ExpenseSummaryResponseDto {
   @ApiProperty({ example: 4 })
   incomeCount: number;
 }
+
+export class ExpenseDuplicateCheckResponseDto {
+  @ApiProperty({ example: true })
+  hasPotentialDuplicates: boolean;
+
+  @ApiProperty({
+    type: [ExpenseResponseDto],
+    description: "Top duplicate candidates sorted by closest recent date",
+  })
+  candidates: ExpenseResponseDto[];
+}
+
+export class ExpenseBatchOperationResponseDto {
+  @ApiProperty({ enum: ["delete", "updateCategory"] })
+  action: "delete" | "updateCategory";
+
+  @ApiProperty({ example: 3 })
+  processed: number;
+
+  @ApiProperty({ example: 1 })
+  skipped: number;
+
+  @ApiProperty({
+    type: [String],
+    example: [
+      "a5f0f875-3d32-4f45-ac97-84d5bf9c4d67",
+      "95dc5305-a6c7-4fc1-a117-f3ca6060f31f",
+    ],
+  })
+  ids: string[];
+}

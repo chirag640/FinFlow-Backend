@@ -1,11 +1,17 @@
-import { afterAll, expect, jest } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { access, mkdtemp, rm } from "fs/promises";
-import { beforeEach, describe, it } from "node:test";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const sendMock = jest.fn();
-const getSignedUrlMock = jest.fn();
+const sendMock = jest.fn<(...args: unknown[]) => Promise<unknown>>();
+const getSignedUrlMock = jest.fn<(...args: unknown[]) => Promise<string>>();
 
 jest.mock("@aws-sdk/client-s3", () => {
   class MockS3Client {

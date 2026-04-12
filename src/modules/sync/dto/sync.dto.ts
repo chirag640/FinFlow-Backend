@@ -5,6 +5,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
@@ -150,6 +151,54 @@ export class SyncGoalDto {
   @IsBoolean() deleted: boolean;
 }
 
+export class SyncSuggestionInteractionDto {
+  @IsString()
+  @MaxLength(48)
+  flow: string;
+
+  @IsString()
+  @IsIn(["accepted", "ignored"])
+  eventType: "accepted" | "ignored";
+
+  @IsBoolean()
+  isIncome: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  suggestionDescription?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  suggestionCategory?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @IsDecimalScale(2)
+  suggestionAmount?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  confidence?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  reason?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  inputDescription?: string;
+
+  @IsDateString()
+  createdAt: string;
+}
+
 export class SyncPushDto {
   @ApiPropertyOptional({
     description: "Sync payload contract version",
@@ -186,6 +235,16 @@ export class SyncPushDto {
   @ValidateNested({ each: true })
   @Type(() => SyncGoalDto)
   goals?: SyncGoalDto[];
+
+  @ApiPropertyOptional({ type: [SyncSuggestionInteractionDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(300, {
+    message: "Cannot sync more than 300 suggestion interactions at once",
+  })
+  @ValidateNested({ each: true })
+  @Type(() => SyncSuggestionInteractionDto)
+  suggestionInteractions?: SyncSuggestionInteractionDto[];
 }
 
 // ── Pull DTOs ─────────────────────────────────────────────────────────────────

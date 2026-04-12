@@ -18,6 +18,7 @@ import {
   NotificationEventDoc,
   PushDeviceDoc,
   RefreshTokenDoc,
+  SuggestionInteractionDoc,
   SyncPushIdempotencyDoc,
   UserDoc,
 } from "./database.types";
@@ -88,6 +89,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
   get syncPushIdempotency(): Collection<SyncPushIdempotencyDoc> {
     return this.db.collection<SyncPushIdempotencyDoc>("SyncPushIdempotency");
+  }
+  get suggestionInteractions(): Collection<SuggestionInteractionDoc> {
+    return this.db.collection<SuggestionInteractionDoc>(
+      "SuggestionInteraction",
+    );
   }
   get emailOutbox(): Collection<EmailOutboxDoc> {
     return this.db.collection<EmailOutboxDoc>("EmailOutbox");
@@ -165,6 +171,16 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     await safe(() =>
       this.expenses.createIndex({ userId: 1, deletedAt: 1, date: -1 }),
     );
+    // Supports duplicate checks and amount range scans within user/date windows.
+    await safe(() =>
+      this.expenses.createIndex({
+        userId: 1,
+        deletedAt: 1,
+        isIncome: 1,
+        amount: 1,
+        date: -1,
+      }),
+    );
 
     await safe(() => this.budgets.createIndex({ userId: 1 }));
     await safe(() =>
@@ -226,6 +242,14 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         { expiresAt: 1 },
         { expireAfterSeconds: 0 },
       ),
+    );
+
+    await safe(() => this.suggestionInteractions.createIndex({ userId: 1 }));
+    await safe(() =>
+      this.suggestionInteractions.createIndex({ userId: 1, createdAt: -1 }),
+    );
+    await safe(() =>
+      this.suggestionInteractions.createIndex({ eventType: 1, createdAt: -1 }),
     );
 
     // Email outbox indexes

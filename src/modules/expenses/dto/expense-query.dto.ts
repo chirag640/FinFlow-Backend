@@ -4,6 +4,7 @@ import {
   IsDateString,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -11,6 +12,7 @@ import {
   MaxLength,
   Min,
 } from "class-validator";
+import { IsDecimalScale } from "../../../common/validators/decimal-scale.validator";
 
 export class ExpenseQueryDto {
   @ApiPropertyOptional()
@@ -47,6 +49,32 @@ export class ExpenseQueryDto {
   @IsOptional()
   @IsDateString({}, { message: "to must be a valid ISO 8601 date string" })
   to?: string;
+
+  @ApiPropertyOptional({
+    description: "Minimum transaction amount filter",
+    example: 100,
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === "string" ? Number.parseFloat(value) : value,
+  )
+  @IsNumber()
+  @Min(0)
+  @IsDecimalScale(2)
+  minAmount?: number;
+
+  @ApiPropertyOptional({
+    description: "Maximum transaction amount filter",
+    example: 2500,
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === "string" ? Number.parseFloat(value) : value,
+  )
+  @IsNumber()
+  @Min(0)
+  @IsDecimalScale(2)
+  maxAmount?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

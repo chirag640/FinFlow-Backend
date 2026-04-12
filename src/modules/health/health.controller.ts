@@ -2,10 +2,12 @@ import { Controller, Get } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Public } from "../../common/decorators/public.decorator";
 import { RetentionService } from "../../common/services/retention.service";
+import { ReceiptStorageService } from "../expenses/receipt-storage.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import {
   FcmHealthResponseDto,
   HealthResponseDto,
+  ReceiptsHealthResponseDto,
   RetentionHealthResponseDto,
 } from "./dto/health-response.dto";
 
@@ -15,6 +17,7 @@ export class HealthController {
   constructor(
     private readonly notifications: NotificationsService,
     private readonly retention: RetentionService,
+    private readonly receiptStorage: ReceiptStorageService,
   ) {}
 
   @Public()
@@ -49,6 +52,19 @@ export class HealthController {
     return {
       status: "ok",
       ...this.retention.getRetentionPolicy(),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  @Public()
+  @Get("receipts")
+  @ApiOperation({ summary: "Receipt storage health diagnostics" })
+  @ApiOkResponse({ type: ReceiptsHealthResponseDto })
+  getReceiptHealth() {
+    const health = this.receiptStorage.getHealthStatus();
+    return {
+      status: health.receiptStorageConfigured ? "ok" : "degraded",
+      ...health,
       timestamp: new Date().toISOString(),
     };
   }

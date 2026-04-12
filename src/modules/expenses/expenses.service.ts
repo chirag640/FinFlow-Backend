@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -9,14 +10,18 @@ import { randomUUID } from "crypto";
 import { DatabaseService } from "../../database/database.service";
 import { ExpenseDoc } from "../../database/database.types";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
+import { ExpenseBatchOperationDto } from "./dto/expense-batch.dto";
+import { ExpenseDuplicateCheckDto } from "./dto/expense-duplicate-check.dto";
 import { ExpenseQueryDto } from "./dto/expense-query.dto";
 
 type ExpenseFilter = {
   userId: string;
   deletedAt: null;
+  isIncome?: boolean;
   category?: string;
   description?: { $regex: string; $options: "i" };
   date?: { $gte?: Date; $lte?: Date };
+  amount?: { $gte?: number; $lte?: number };
   _id?: { $lt: string };
 };
 
@@ -58,6 +63,28 @@ export class ExpensesService {
         ...(query.to && { $lte: new Date(query.to) }),
       };
     }
+
+    const minAmount = query.minAmount;
+    const maxAmount = query.maxAmount;
+    if (minAmount != null || maxAmount != null) {
+      if (
+        minAmount != null &&
+        maxAmount != null &&
+        Number.isFinite(minAmount) &&
+        Number.isFinite(maxAmount) &&
+        maxAmount < minAmount
+      ) {
+        throw new BadRequestException(
+          "maxAmount must be greater than or equal to minAmount",
+        );
+      }
+
+      filter.amount = {
+        ...(minAmount != null ? { $gte: minAmount } : {}),
+        ...(maxAmount != null ? { $lte: maxAmount } : {}),
+      };
+    }
+
     if (typeof query.cursor === "string" && UUID_V4_REGEX.test(query.cursor)) {
       filter._id = { $lt: query.cursor };
     }
@@ -168,6 +195,123 @@ export class ExpensesService {
       { _id: id },
       { $set: { deletedAt: new Date(), updatedAt: new Date() } },
     );
+  }
+
+  async checkPotentialDuplicates(
+    userId: string,
+    dto: ExpenseDuplicateCheckDto,
+  ) {
+    const lookbackDays = dto.lookbackDays ?? 3;
+    const normalizedDescription = dto.description.trim();
+    const escapedDescription = normalizedDescription.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
+    const normalizedAmount = this._roundAmount(dto.amount);
+    const amountTolerance = 0.01;
+
+    const targetDate = new Date(dto.date);
+    const from = new Date(targetDate);
+    const to = new Date(targetDate);
+    from.setDate(from.getDate() - lookbackDays);
+    to.setDate(to.getDate() + lookbackDays);
+
+    const filter: ExpenseFilter = {
+      userId,
+      deletedAt: null,
+      isIncome: dto.isIncome ?? false,
+      amount: {
+        $gte: normalizedAmount - amountTolerance,
+        $lte: normalizedAmount + amountTolerance,
+      },
+      date: {
+        $gte: from,
+        $lte: to,
+      },
+    };
+
+    if (escapedDescription.length > 0) {
+      filter.description = {
+        $regex: `^${escapedDescription}$`,
+        $options: "i",
+      };
+    }
+
+    const candidates = await this.db.expenses
+      .find(filter)
+      .sort({ date: -1, _id: -1 })
+      .limit(5)
+      .toArray();
+
+    return {
+      hasPotentialDuplicates: candidates.length > 0,
+      candidates: candidates.map(this._toClient),
+    };
+  }
+
+  async applyBatchOperation(userId: string, dto: ExpenseBatchOperationDto) {
+    const uniqueIds = Array.from(new Set(dto.ids));
+    if (uniqueIds.length === 0) {
+      return {
+        action: dto.action,
+        processed: 0,
+        skipped: 0,
+        ids: uniqueIds,
+      };
+    }
+
+    const now = new Date();
+
+    if (dto.action === "delete") {
+      const result = await this.db.expenses.updateMany(
+        {
+          _id: { $in: uniqueIds },
+          userId,
+          deletedAt: null,
+        },
+        {
+          $set: {
+            deletedAt: now,
+            updatedAt: now,
+          },
+        },
+      );
+
+      return {
+        action: dto.action,
+        processed: result.modifiedCount,
+        skipped: Math.max(0, uniqueIds.length - result.modifiedCount),
+        ids: uniqueIds,
+      };
+    }
+
+    const category = dto.category?.trim();
+    if (!category) {
+      throw new BadRequestException(
+        "category is required for updateCategory batch action",
+      );
+    }
+
+    const result = await this.db.expenses.updateMany(
+      {
+        _id: { $in: uniqueIds },
+        userId,
+        deletedAt: null,
+      },
+      {
+        $set: {
+          category,
+          updatedAt: now,
+        },
+      },
+    );
+
+    return {
+      action: dto.action,
+      processed: result.modifiedCount,
+      skipped: Math.max(0, uniqueIds.length - result.modifiedCount),
+      ids: uniqueIds,
+    };
   }
 
   // ── Analytics ──────────────────────────────────────────────────────────────
@@ -355,5 +499,9 @@ export class ExpensesService {
 
   private _toClient(e: ExpenseDoc) {
     return { ...e, id: e._id };
+  }
+
+  private _roundAmount(amount: number): number {
+    return Math.round(amount * 100) / 100;
   }
 }

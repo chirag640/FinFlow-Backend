@@ -100,4 +100,50 @@ describe("ExpensesService query hardening", () => {
     expect(db.expenses.countDocuments).not.toHaveBeenCalled();
     expect(result.total).toBeUndefined();
   });
+
+  it("rejects maxAmount lower than minAmount", async () => {
+    await expect(
+      service.findAll("u1", {
+        minAmount: 300,
+        maxAmount: 100,
+      } as any),
+    ).rejects.toThrow("maxAmount must be greater than or equal to minAmount");
+  });
+
+  it("builds duplicate-check filter with escaped exact description", async () => {
+    let capturedFilter: AnyDoc | null = null;
+
+    db.expenses.find.mockImplementation((filter: AnyDoc) => {
+      capturedFilter = filter;
+      return makeCursor([
+        {
+          _id: "550e8400-e29b-41d4-a716-446655440011",
+          amount: 200,
+          description: "Rent.*",
+          category: "housing",
+          date: new Date("2026-04-12T00:00:00.000Z"),
+          notes: null,
+          isIncome: false,
+          isRecurring: false,
+          userId: "u1",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+        },
+      ]);
+    });
+
+    const result = await service.checkPotentialDuplicates("u1", {
+      amount: 200,
+      description: "Rent.*",
+      date: "2026-04-12T00:00:00.000Z",
+      lookbackDays: 3,
+      isIncome: false,
+    } as any);
+
+    expect(capturedFilter?.description?.$regex).toBe("^Rent\\.\\*$");
+    expect(capturedFilter?.amount).toEqual({ $gte: 199.99, $lte: 200.01 });
+    expect(result.hasPotentialDuplicates).toBe(true);
+    expect(result.candidates.length).toBe(1);
+  });
 });

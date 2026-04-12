@@ -38,3 +38,23 @@ export class RetentionHealthResponseDto {
   @ApiProperty({ example: "2026-04-11T12:25:00.000Z" })
   timestamp: string;
 }
+
+export class ReceiptsHealthResponseDto {
+  @ApiProperty({ example: "ok" })
+  status: string;
+
+  @ApiProperty({ enum: ["local", "s3"], example: "s3" })
+  receiptStorageProvider: "local" | "s3";
+
+  @ApiProperty({ example: true })
+  receiptStorageConfigured: boolean;
+
+  @ApiProperty({ example: true })
+  signedReadUrls: boolean;
+
+  @ApiProperty({ example: true })
+  s3BucketConfigured: boolean;
+
+  @ApiProperty({ example: "2026-04-11T12:25:00.000Z" })
+  timestamp: string;
+}

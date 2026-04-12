@@ -34,6 +34,9 @@ export class SyncPushSyncedDto {
 
   @ApiProperty({ example: 3 })
   goals: number;
+
+  @ApiProperty({ example: 9 })
+  suggestionInteractions: number;
 }
 
 export class SyncPushResponseDto {

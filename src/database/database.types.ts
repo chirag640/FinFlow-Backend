@@ -220,3 +220,18 @@ export interface SyncPushIdempotencyDoc {
   updatedAt: Date;
   expiresAt: Date;
 }
+
+export interface SuggestionInteractionDoc {
+  _id: string;
+  createdAt: Date;
+  userId: string;
+  flow: string;
+  eventType: "accepted" | "ignored";
+  isIncome: boolean;
+  suggestionDescription?: string | null;
+  suggestionCategory?: string | null;
+  suggestionAmount?: number | null;
+  confidence?: number | null;
+  reason?: string | null;
+  inputDescription?: string | null;
+}

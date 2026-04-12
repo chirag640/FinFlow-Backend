@@ -33,9 +33,21 @@ describe("ExpenseQueryDto validation", () => {
       search: "groceries",
       category: "food",
       take: 20,
+      minAmount: 10,
+      maxAmount: 499.99,
     });
 
     const errors = await validate(dto);
     expect(errors).toHaveLength(0);
+  });
+
+  it("rejects negative minAmount", async () => {
+    const dto = plainToInstance(ExpenseQueryDto, {
+      minAmount: -1,
+    });
+
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => e.property === "minAmount")).toBe(true);
   });
 });

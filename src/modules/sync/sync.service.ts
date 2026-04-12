@@ -14,6 +14,7 @@ import {
   BudgetDoc,
   ExpenseDoc,
   GoalDoc,
+  SuggestionInteractionDoc,
   SyncPushIdempotencyDoc,
   UserDoc,
 } from "../../database/database.types";
@@ -39,6 +40,7 @@ type SyncPushResponse = {
     expenses: number;
     budgets: number;
     goals: number;
+    suggestionInteractions: number;
   };
   ack: SyncPushAck;
   timestamp: string;
@@ -330,6 +332,7 @@ export class SyncService {
           expenses: dto.expenses ?? [],
           budgets: dto.budgets ?? [],
           goals: dto.goals ?? [],
+          suggestionInteractions: dto.suggestionInteractions ?? [],
         }),
       )
       .digest("hex");
@@ -456,7 +459,8 @@ export class SyncService {
     const queueDepth =
       (dto.expenses?.length ?? 0) +
       (dto.budgets?.length ?? 0) +
-      (dto.goals?.length ?? 0);
+      (dto.goals?.length ?? 0) +
+      (dto.suggestionInteractions?.length ?? 0);
     if (retryCount > 0) {
       this.metrics.recordRetry(retryCount);
     }
@@ -476,7 +480,12 @@ export class SyncService {
       }
     }
 
-    const results = { expenses: 0, budgets: 0, goals: 0 };
+    const results = {
+      expenses: 0,
+      budgets: 0,
+      goals: 0,
+      suggestionInteractions: 0,
+    };
     const ack: SyncPushAck = {
       expenses: this._newEntityAck(),
       budgets: this._newEntityAck(),
@@ -744,6 +753,42 @@ export class SyncService {
 
           if (operations.length > 0) {
             await this.db.goals.bulkWrite(operations, { ordered: false });
+          }
+        }
+      }
+
+      if (dto.suggestionInteractions?.length) {
+        for (const chunk of this._chunk(
+          dto.suggestionInteractions,
+          SyncService.PUSH_CHUNK_SIZE,
+        )) {
+          const docs: SuggestionInteractionDoc[] = chunk.map((event) => {
+            const createdAt = new Date(event.createdAt);
+            const now = new Date();
+            return {
+              _id: randomUUID(),
+              createdAt:
+                Number.isNaN(createdAt.getTime()) ||
+                createdAt.getTime() > now.getTime() + 60_000
+                  ? now
+                  : createdAt,
+              userId,
+              flow: event.flow,
+              eventType: event.eventType,
+              isIncome: event.isIncome,
+              suggestionDescription: event.suggestionDescription ?? null,
+              suggestionCategory: event.suggestionCategory ?? null,
+              suggestionAmount: event.suggestionAmount ?? null,
+              confidence: event.confidence ?? null,
+              reason: event.reason ?? null,
+              inputDescription: event.inputDescription ?? null,
+            };
+          });
+          if (docs.length > 0) {
+            await this.db.suggestionInteractions.insertMany(docs, {
+              ordered: false,
+            });
+            results.suggestionInteractions += docs.length;
           }
         }
       }
