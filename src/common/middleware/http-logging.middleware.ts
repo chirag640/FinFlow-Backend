@@ -23,15 +23,27 @@ type HttpLogRecord = {
 
 const SENSITIVE_KEYS = new Set([
   "password",
-  "newPassword",
-  "confirmPassword",
+  "newpassword",
+  "oldpassword",
+  "confirmpassword",
+  "currentpassword",
   "token",
-  "accessToken",
-  "refreshToken",
+  "accesstoken",
+  "refreshtoken",
   "otp",
+  "otpcode",
   "code",
   "authorization",
+  "pinhash",
+  "pinverifierhash",
+  "pinsalt",
+  "secret",
+  "apikey",
 ]);
+
+function normalizeSensitiveKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
 
 function redactSensitive(value: unknown): unknown {
   if (value == null) return value;
@@ -45,7 +57,7 @@ function redactSensitive(value: unknown): unknown {
     const output: Record<string, unknown> = {};
 
     for (const [key, fieldValue] of Object.entries(input)) {
-      if (SENSITIVE_KEYS.has(key)) {
+      if (SENSITIVE_KEYS.has(normalizeSensitiveKey(key))) {
         output[key] = "[REDACTED]";
       } else {
         output[key] = redactSensitive(fieldValue);

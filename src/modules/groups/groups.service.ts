@@ -12,6 +12,7 @@ import {
   GroupDoc,
   GroupExpenseDoc,
   GroupMemberDoc,
+  GroupSettlementAuditDoc,
 } from "../../database/database.types";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AddGroupExpenseDto } from "./dto/add-group-expense.dto";
@@ -84,6 +85,32 @@ type GroupExpenseResponse = {
   note: string | null;
   date: Date;
   isSettlement: boolean;
+};
+
+type GroupSettlementDisputeResponse = {
+  status: "open" | "resolved";
+  reason: string;
+  note: string | null;
+  disputedAt: Date;
+  disputedByUserId: string;
+  resolvedAt: Date | null;
+  resolvedByUserId: string | null;
+  resolutionNote: string | null;
+};
+
+type GroupSettlementAuditResponse = {
+  id: string;
+  groupId: string;
+  settlementExpenseId: string;
+  fromMemberId: string;
+  toMemberId: string;
+  amount: number;
+  settledAt: Date;
+  recordedByUserId: string;
+  status: "recorded" | "disputed" | "resolved";
+  dispute: GroupSettlementDisputeResponse | null;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 const GROUP_EXPENSE_SORT_FIELDS: GroupExpenseSortField[] = [
@@ -601,6 +628,154 @@ export class GroupsService {
     };
   }
 
+  async getSettlementAuditTrail(groupId: string, userId: string) {
+    const group = await this.db.groups.findOne({
+      _id: groupId,
+      deletedAt: null,
+    });
+    if (!group) throw new NotFoundException();
+    await this._assertMember(groupId, group.ownerId, userId);
+
+    const audits = await this.db.groupSettlementAudits
+      .find({ groupId })
+      .sort({ settledAt: -1, createdAt: -1 })
+      .limit(100)
+      .toArray();
+
+    return {
+      total: audits.length,
+      data: audits.map((audit) => this._toGroupSettlementAuditResponse(audit)),
+    };
+  }
+
+  async disputeSettlement(
+    groupId: string,
+    userId: string,
+    settlementExpenseId: string,
+    reason: string,
+    note?: string,
+  ) {
+    const group = await this.db.groups.findOne({
+      _id: groupId,
+      deletedAt: null,
+    });
+    if (!group) throw new NotFoundException();
+    await this._assertMember(groupId, group.ownerId, userId);
+
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) {
+      throw new BadRequestException("Dispute reason is required");
+    }
+
+    const now = new Date();
+    const audit = await this._findOrCreateSettlementAudit(
+      groupId,
+      settlementExpenseId,
+      userId,
+    );
+
+    await this._assertSettlementDisputeActor(
+      groupId,
+      userId,
+      group.ownerId,
+      audit,
+    );
+
+    if (audit.status === "disputed" && audit.dispute?.status === "open") {
+      throw new BadRequestException("Settlement already has an active dispute");
+    }
+    if (audit.status === "resolved" || audit.dispute?.status === "resolved") {
+      throw new BadRequestException(
+        "Resolved settlement disputes cannot be reopened",
+      );
+    }
+
+    await this.db.groupSettlementAudits.updateOne(
+      { _id: audit._id },
+      {
+        $set: {
+          status: "disputed",
+          updatedAt: now,
+          dispute: {
+            status: "open",
+            reason: normalizedReason,
+            note: note?.trim() || null,
+            disputedAt: now,
+            disputedByUserId: userId,
+            resolvedAt: null,
+            resolvedByUserId: null,
+            resolutionNote: null,
+          },
+        },
+      },
+    );
+
+    const updated = await this.db.groupSettlementAudits.findOne({
+      _id: audit._id,
+    });
+    if (!updated) {
+      throw new NotFoundException("Settlement audit not found");
+    }
+
+    return this._toGroupSettlementAuditResponse(updated);
+  }
+
+  async resolveSettlementDispute(
+    groupId: string,
+    userId: string,
+    settlementExpenseId: string,
+    resolutionNote?: string,
+  ) {
+    const group = await this.db.groups.findOne({
+      _id: groupId,
+      deletedAt: null,
+    });
+    if (!group) throw new NotFoundException();
+    await this._assertMember(groupId, group.ownerId, userId);
+
+    if (group.ownerId !== userId) {
+      throw new ForbiddenException(
+        "Only the group owner can resolve settlement disputes",
+      );
+    }
+
+    const audit = await this._findOrCreateSettlementAudit(
+      groupId,
+      settlementExpenseId,
+      userId,
+    );
+
+    if (audit.status !== "disputed" || audit.dispute?.status !== "open") {
+      throw new BadRequestException(
+        "Settlement is not under an active dispute",
+      );
+    }
+
+    const now = new Date();
+    await this.db.groupSettlementAudits.updateOne(
+      { _id: audit._id },
+      {
+        $set: {
+          status: "resolved",
+          updatedAt: now,
+          "dispute.status": "resolved",
+          "dispute.resolvedAt": now,
+          "dispute.resolvedByUserId": userId,
+          "dispute.resolutionNote": resolutionNote?.trim() || null,
+        },
+      },
+    );
+
+    const updated = await this.db.groupSettlementAudits.findOne({
+      _id: audit._id,
+    });
+    if (!updated) {
+      throw new NotFoundException("Settlement audit not found");
+    }
+
+    return this._toGroupSettlementAuditResponse(updated);
+  }
+
   async settleUp(
     groupId: string,
     userId: string,
@@ -641,6 +816,21 @@ export class GroupsService {
     };
     await this.db.groupExpenses.insertOne(expense);
 
+    const audit: GroupSettlementAuditDoc = {
+      _id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      groupId,
+      settlementExpenseId: expense._id,
+      fromMemberId,
+      toMemberId,
+      amount,
+      settledAt: now,
+      recordedByUserId: userId,
+      status: "recorded",
+    };
+    await this.db.groupSettlementAudits.insertOne(audit);
+
     const recipientUserIds = Array.from(
       new Set(
         [fromMember?.userId, toMember?.userId]
@@ -660,7 +850,10 @@ export class GroupsService {
       }),
     );
 
-    return this._toGroupExpenseResponse(expense);
+    return {
+      ...this._toGroupExpenseResponse(expense),
+      settlementAuditId: audit._id,
+    };
   }
 
   async removeExpense(groupId: string, expenseId: string, userId: string) {
@@ -761,6 +954,104 @@ export class GroupsService {
       date: expense.date,
       isSettlement: expense.isSettlement ?? false,
     };
+  }
+
+  private _toGroupSettlementAuditResponse(
+    audit: GroupSettlementAuditDoc,
+  ): GroupSettlementAuditResponse {
+    return {
+      id: audit._id,
+      groupId: audit.groupId,
+      settlementExpenseId: audit.settlementExpenseId,
+      fromMemberId: audit.fromMemberId,
+      toMemberId: audit.toMemberId,
+      amount: audit.amount,
+      settledAt: audit.settledAt,
+      recordedByUserId: audit.recordedByUserId,
+      status: audit.status,
+      dispute: audit.dispute
+        ? {
+            status: audit.dispute.status,
+            reason: audit.dispute.reason,
+            note: audit.dispute.note ?? null,
+            disputedAt: audit.dispute.disputedAt,
+            disputedByUserId: audit.dispute.disputedByUserId,
+            resolvedAt: audit.dispute.resolvedAt ?? null,
+            resolvedByUserId: audit.dispute.resolvedByUserId ?? null,
+            resolutionNote: audit.dispute.resolutionNote ?? null,
+          }
+        : null,
+      createdAt: audit.createdAt,
+      updatedAt: audit.updatedAt,
+    };
+  }
+
+  private async _findOrCreateSettlementAudit(
+    groupId: string,
+    settlementExpenseId: string,
+    actorUserId: string,
+  ): Promise<GroupSettlementAuditDoc> {
+    const existing = await this.db.groupSettlementAudits.findOne({
+      groupId,
+      settlementExpenseId,
+    });
+    if (existing) {
+      return existing;
+    }
+
+    const settlementExpense = await this.db.groupExpenses.findOne({
+      _id: settlementExpenseId,
+      groupId,
+      deletedAt: null,
+      isSettlement: true,
+    });
+    if (!settlementExpense) {
+      throw new NotFoundException("Settlement record not found");
+    }
+
+    const now = new Date();
+    const fallbackAudit: GroupSettlementAuditDoc = {
+      _id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      groupId,
+      settlementExpenseId: settlementExpense._id,
+      fromMemberId: settlementExpense.paidByMemberId,
+      toMemberId:
+        settlementExpense.shares[0]?.memberId ??
+        settlementExpense.paidByMemberId,
+      amount: settlementExpense.amount,
+      settledAt: settlementExpense.date,
+      recordedByUserId: actorUserId,
+      status: "recorded",
+    };
+    await this.db.groupSettlementAudits.insertOne(fallbackAudit);
+    return fallbackAudit;
+  }
+
+  private async _assertSettlementDisputeActor(
+    groupId: string,
+    userId: string,
+    ownerId: string,
+    audit: GroupSettlementAuditDoc,
+  ) {
+    if (userId === ownerId) {
+      return;
+    }
+
+    const actorMember = await this.db.groupMembers.findOne({ groupId, userId });
+    if (!actorMember) {
+      throw new ForbiddenException();
+    }
+
+    const isParticipant =
+      actorMember._id === audit.fromMemberId ||
+      actorMember._id === audit.toMemberId;
+    if (!isParticipant) {
+      throw new ForbiddenException(
+        "Only settlement participants or group owner can dispute this record",
+      );
+    }
   }
 
   private _toGroupResponse(

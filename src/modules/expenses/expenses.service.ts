@@ -21,6 +21,11 @@ type ExpenseFilter = {
 };
 
 type ExpenseUpdateSet = Partial<Omit<CreateExpenseDto, "date">> & {
+  recurringRule?: string | null;
+  recurringDueDay?: number | null;
+  receiptImageBase64?: string | null;
+  receiptImageUrl?: string | null;
+  receiptStorageKey?: string | null;
   updatedAt: Date;
   date?: Date;
 };
@@ -101,6 +106,13 @@ export class ExpensesService {
 
   async create(userId: string, dto: CreateExpenseDto) {
     const now = new Date();
+    const recurringRule = dto.isRecurring ? (dto.recurringRule ?? null) : null;
+    const recurringDueDay =
+      dto.isRecurring && recurringRule === "monthly"
+        ? (dto.recurringDueDay ?? null)
+        : null;
+    const hasExternalReceiptRef =
+      !!dto.receiptImageUrl?.trim() || !!dto.receiptStorageKey?.trim();
     const doc: ExpenseDoc = {
       _id: dto.id ?? randomUUID(), // honour client UUID to avoid sync duplicates
       createdAt: now,
@@ -110,9 +122,17 @@ export class ExpensesService {
       date: new Date(dto.date),
       isIncome: dto.isIncome ?? false,
       isRecurring: dto.isRecurring ?? false,
-      recurringRule: dto.recurringRule ?? null,
+      recurringRule,
+      recurringDueDay,
       recurringParentId: null,
       notes: dto.notes ?? null,
+      receiptImageBase64: hasExternalReceiptRef
+        ? null
+        : (dto.receiptImageBase64 ?? null),
+      receiptImageMimeType: dto.receiptImageMimeType ?? null,
+      receiptImageUrl: dto.receiptImageUrl ?? null,
+      receiptStorageKey: dto.receiptStorageKey ?? null,
+      receiptOcrText: dto.receiptOcrText ?? null,
       userId,
     };
     await this.db.expenses.insertOne(doc);
@@ -124,6 +144,20 @@ export class ExpensesService {
     const { date, ...rest } = dto;
     const set: ExpenseUpdateSet = { ...rest, updatedAt: new Date() };
     if (date) set.date = new Date(date);
+
+    const hasExternalReceiptRef =
+      !!dto.receiptImageUrl?.trim() || !!dto.receiptStorageKey?.trim();
+    if (hasExternalReceiptRef) {
+      set.receiptImageBase64 = null;
+    }
+
+    if (dto.isRecurring === false) {
+      set.recurringRule = null;
+      set.recurringDueDay = null;
+    } else if (dto.recurringRule && dto.recurringRule !== "monthly") {
+      set.recurringDueDay = null;
+    }
+
     await this.db.expenses.updateOne({ _id: id }, { $set: set });
     return this.findOne(id, userId);
   }
@@ -211,11 +245,19 @@ export class ExpensesService {
       baseDate.setHours(0, 0, 0, 0);
 
       const datesToGenerate: Date[] = [];
-      let nextDate = this._nextOccurrence(baseDate, template.recurringRule);
+      let nextDate = this._nextOccurrence(
+        baseDate,
+        template.recurringRule,
+        template.recurringDueDay,
+      );
       let safety = 0;
       while (nextDate <= today && safety < 365) {
         datesToGenerate.push(new Date(nextDate));
-        nextDate = this._nextOccurrence(nextDate, template.recurringRule);
+        nextDate = this._nextOccurrence(
+          nextDate,
+          template.recurringRule,
+          template.recurringDueDay,
+        );
         safety++;
       }
 
@@ -274,7 +316,11 @@ export class ExpensesService {
     }
   }
 
-  private _nextOccurrence(from: Date, rule: string): Date {
+  private _nextOccurrence(
+    from: Date,
+    rule: string,
+    recurringDueDay?: number | null,
+  ): Date {
     const next = new Date(from);
     switch (rule) {
       case "daily":
@@ -284,6 +330,9 @@ export class ExpensesService {
         next.setDate(next.getDate() + 7);
         break;
       case "monthly":
+        if (typeof recurringDueDay === "number") {
+          return this._nextMonthlyOccurrence(from, recurringDueDay);
+        }
         next.setMonth(next.getMonth() + 1);
         break;
       case "yearly":
@@ -291,6 +340,17 @@ export class ExpensesService {
         break;
     }
     return next;
+  }
+
+  private _nextMonthlyOccurrence(from: Date, recurringDueDay: number): Date {
+    const targetMonth = new Date(from.getFullYear(), from.getMonth() + 1, 1);
+    const daysInMonth = new Date(
+      targetMonth.getFullYear(),
+      targetMonth.getMonth() + 1,
+      0,
+    ).getDate();
+    const dueDay = Math.min(Math.max(recurringDueDay, 1), daysInMonth);
+    return new Date(targetMonth.getFullYear(), targetMonth.getMonth(), dueDay);
   }
 
   private _toClient(e: ExpenseDoc) {

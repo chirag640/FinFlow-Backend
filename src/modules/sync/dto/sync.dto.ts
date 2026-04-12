@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUrl,
   Max,
   MaxLength,
   Min,
@@ -38,12 +39,36 @@ export class SyncExpenseDto {
   @IsDateString() date: string;
   @IsOptional()
   @MaxLength(500)
-  @IsOptional()
   @IsString()
   notes?: string;
+  @IsOptional()
+  @MaxLength(2000000)
+  @IsString()
+  receiptImageBase64?: string;
+  @IsOptional()
+  @MaxLength(64)
+  @IsString()
+  receiptImageMimeType?: string;
+  @IsOptional()
+  @MaxLength(2048)
+  @IsUrl({ require_protocol: true })
+  receiptImageUrl?: string;
+  @IsOptional()
+  @MaxLength(256)
+  @IsString()
+  receiptStorageKey?: string;
+  @IsOptional()
+  @MaxLength(5000)
+  @IsString()
+  receiptOcrText?: string;
   @IsBoolean() isIncome: boolean;
   @IsBoolean() isRecurring: boolean;
   @IsOptional() @IsString() recurringRule?: string;
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  recurringDueDay?: number;
   @IsDateString() updatedAt: string;
   @IsBoolean() deleted: boolean;
 }

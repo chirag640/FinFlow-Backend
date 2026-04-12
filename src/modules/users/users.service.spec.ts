@@ -155,4 +155,25 @@ describe("UsersService PIN security", () => {
     expect(set.pinFailedAttempts).toBe(5);
     expect(set.pinLockedUntil).toBeInstanceOf(Date);
   });
+
+  it("returns locked response immediately when lock window is active", async () => {
+    const futureLock = new Date(Date.now() + 45_000);
+
+    db.users.findOne.mockResolvedValue({
+      _id: "u1",
+      pinSalt: null,
+      pinVerifierHash: null,
+      pinHash: null,
+      pinFailedAttempts: 5,
+      pinLockedUntil: futureLock,
+      deletedAt: null,
+    });
+
+    const result = await service.verifyPin("u1", "1234");
+
+    expect(result.valid).toBe(false);
+    expect(result.remainingAttempts).toBe(0);
+    expect(result.lockedUntil).toBe(futureLock.toISOString());
+    expect(db.users.updateOne).not.toHaveBeenCalled();
+  });
 });

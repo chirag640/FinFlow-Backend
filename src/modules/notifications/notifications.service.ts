@@ -3,9 +3,13 @@ import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "crypto";
 import * as admin from "firebase-admin";
 import { MongoServerError } from "mongodb";
+import {
+  DB_ERROR_CODES,
+  NOTIFICATION_CONFIG,
+  TIME_CONSTANTS,
+} from "../../common/constants";
 import { DatabaseService } from "../../database/database.service";
 import { GroupExpenseDoc, GroupMemberDoc } from "../../database/database.types";
-import { NOTIFICATION_CONFIG, DB_ERROR_CODES, TIME_CONSTANTS } from "../../common/constants";
 
 type FcmPayload = {
   title: string;
@@ -26,7 +30,11 @@ export class NotificationsService {
     NOTIFICATION_CONFIG.INACTIVITY_DAYS,
   );
   private readonly trackedSpikeCategories = ["food", "travel"];
-  private readonly budgetThresholds = NOTIFICATION_CONFIG.BUDGET_ALERT_PERCENTAGES;
+  private readonly budgetThresholds =
+    NOTIFICATION_CONFIG.BUDGET_ALERT_PERCENTAGES;
+  private readonly goalMilestones = [
+    ...NOTIFICATION_CONFIG.GOAL_MILESTONE_PERCENTAGES,
+  ].sort((a, b) => a - b);
 
   constructor(private readonly db: DatabaseService) {
     this.initializeFirebase();
@@ -438,7 +446,11 @@ export class NotificationsService {
             total: 1,
           },
         },
-        { $match: { total: { $gte: NOTIFICATION_CONFIG.CATEGORY_SPIKE_MIN_AMOUNT } } },
+        {
+          $match: {
+            total: { $gte: NOTIFICATION_CONFIG.CATEGORY_SPIKE_MIN_AMOUNT },
+          },
+        },
       ])
       .toArray();
 
@@ -554,7 +566,11 @@ export class NotificationsService {
       const lastDate = lastDateByTemplateId.get(template._id);
       const baseDate = new Date(lastDate ?? template.date);
       baseDate.setHours(0, 0, 0, 0);
-      const nextDate = this.nextOccurrence(baseDate, template.recurringRule);
+      const nextDate = this.nextOccurrence(
+        baseDate,
+        template.recurringRule,
+        template.recurringDueDay,
+      );
       if (!this.isSameDate(nextDate, tomorrow)) continue;
 
       await this.sendOnceToUser(
@@ -571,6 +587,269 @@ export class NotificationsService {
         },
         4,
       );
+    }
+  }
+
+  @Cron("0 0 20 * * 1")
+  async sendMissingRecurringVerificationAlerts() {
+    if (!this.messaging) return;
+
+    const templates = await this.db.expenses
+      .find({
+        isRecurring: true,
+        recurringParentId: null,
+        deletedAt: null,
+        isIncome: false,
+      })
+      .toArray();
+    if (templates.length === 0) return;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const weekKey = this.isoWeekKey(today);
+
+    const templateIds = templates.map((t) => t._id);
+    const latestInstances = await this.db.expenses
+      .aggregate<{ _id: string; lastDate: Date }>([
+        {
+          $match: {
+            recurringParentId: { $in: templateIds },
+            deletedAt: null,
+          },
+        },
+        {
+          $group: {
+            _id: "$recurringParentId",
+            lastDate: { $max: "$date" },
+          },
+        },
+      ])
+      .toArray();
+
+    const lastDateByTemplateId = new Map(
+      latestInstances.map((instance) => [instance._id, instance.lastDate]),
+    );
+
+    const candidates: Array<{
+      templateId: string;
+      userId: string;
+      description: string;
+      category: string;
+      amount: number;
+      expectedDate: Date;
+      missingDays: number;
+    }> = [];
+
+    for (const template of templates) {
+      const userId = template.userId?.trim();
+      if (!userId || !template.recurringRule) continue;
+
+      const lastDate = lastDateByTemplateId.get(template._id);
+      const baseDate = new Date(lastDate ?? template.date);
+      baseDate.setHours(0, 0, 0, 0);
+
+      const expectedDate = this.nextOccurrence(
+        baseDate,
+        template.recurringRule,
+        template.recurringDueDay,
+      );
+
+      if (expectedDate >= today) continue;
+
+      const missingDays = Math.max(
+        1,
+        Math.floor(
+          (today.getTime() - expectedDate.getTime()) /
+            TIME_CONSTANTS.ONE_DAY_MS,
+        ),
+      );
+      if (missingDays < NOTIFICATION_CONFIG.RECURRING_MISSING_MIN_DAYS) {
+        continue;
+      }
+
+      candidates.push({
+        templateId: template._id,
+        userId,
+        description: template.description,
+        category: template.category,
+        amount: template.amount,
+        expectedDate,
+        missingDays,
+      });
+    }
+
+    if (candidates.length === 0) return;
+
+    const lookbackStart = new Date(today);
+    lookbackStart.setDate(
+      lookbackStart.getDate() -
+        NOTIFICATION_CONFIG.RECURRING_MISSING_LOOKBACK_DAYS,
+    );
+
+    const userIds = Array.from(
+      new Set(candidates.map((candidate) => candidate.userId)),
+    );
+    const manualLogs = await this.db.expenses
+      .find({
+        userId: { $in: userIds },
+        deletedAt: null,
+        recurringParentId: null,
+        isRecurring: false,
+        isIncome: false,
+        date: { $gte: lookbackStart, $lt: today },
+      })
+      .project({ userId: 1, date: 1, description: 1, category: 1, amount: 1 })
+      .toArray();
+
+    const manualLogKeys = new Set(
+      manualLogs.map((log) =>
+        this.recurringMatchKey(
+          log.userId,
+          log.date,
+          log.description,
+          log.category,
+          log.amount,
+        ),
+      ),
+    );
+
+    for (const candidate of candidates) {
+      const shouldCheckManualLog = candidate.expectedDate >= lookbackStart;
+      if (shouldCheckManualLog) {
+        const manualKey = this.recurringMatchKey(
+          candidate.userId,
+          candidate.expectedDate,
+          candidate.description,
+          candidate.category,
+          candidate.amount,
+        );
+        if (manualLogKeys.has(manualKey)) {
+          continue;
+        }
+      }
+
+      await this.sendOnceToUser(
+        candidate.userId,
+        `recurring-missing:${candidate.templateId}:${weekKey}`,
+        {
+          title: "Recurring transaction check-in",
+          body: `${candidate.description} expected on ${this.shortDateLabel(candidate.expectedDate)} looks missing. Verify or log it now.`,
+          data: {
+            type: "recurring_missing_verification",
+            expenseId: candidate.templateId,
+            expectedDate: this.dateKey(candidate.expectedDate),
+            missingDays: String(candidate.missingDays),
+          },
+        },
+        10,
+      );
+    }
+  }
+
+  @Cron("0 15 20 * * *")
+  async sendGoalMilestoneAndEngagementAlerts() {
+    if (!this.messaging) return;
+
+    const userIds = await this.distinctActiveDeviceUserIds();
+    if (userIds.length === 0) return;
+
+    const goals = await this.db.goals
+      .find({
+        userId: { $in: userIds },
+        deletedAt: null,
+      })
+      .toArray();
+    if (goals.length === 0) return;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const weekKey = this.isoWeekKey(today);
+
+    const staleCutoff = new Date(today);
+    staleCutoff.setDate(
+      staleCutoff.getDate() - NOTIFICATION_CONFIG.GOAL_STALE_DAYS,
+    );
+
+    for (const goal of goals) {
+      const userId = goal.userId?.trim();
+      if (!userId || goal.targetAmount <= 0) continue;
+
+      const progressPercent = (goal.currentAmount / goal.targetAmount) * 100;
+      const milestone = this.highestReachedGoalMilestone(progressPercent);
+
+      if (milestone !== null) {
+        const milestoneSent = await this.sendOnceToUser(
+          userId,
+          `goal-milestone:${goal._id}:${milestone}`,
+          {
+            title:
+              milestone === 100
+                ? `Goal reached: ${goal.title}`
+                : `${goal.title} is ${milestone}% funded`,
+            body:
+              milestone === 100
+                ? `Great work! You reached your goal of ${this.formatAmount(goal.targetAmount)}.`
+                : `${this.formatAmount(goal.currentAmount)} saved of ${this.formatAmount(goal.targetAmount)}. Keep going!`,
+            data: {
+              type: "goal_milestone",
+              goalId: goal._id,
+              threshold: String(milestone),
+              progressPercent: progressPercent.toFixed(1),
+            },
+          },
+          365,
+        );
+
+        // Avoid sending additional nudges in the same run when milestone push is delivered.
+        if (milestoneSent) continue;
+      }
+
+      if (progressPercent >= 100) continue;
+
+      const deadline = goal.deadline ? new Date(goal.deadline) : null;
+      if (deadline) {
+        deadline.setHours(0, 0, 0, 0);
+        const daysLeft = Math.ceil(
+          (deadline.getTime() - today.getTime()) / TIME_CONSTANTS.ONE_DAY_MS,
+        );
+
+        if (
+          daysLeft >= 0 &&
+          daysLeft <= NOTIFICATION_CONFIG.GOAL_DEADLINE_SOON_DAYS
+        ) {
+          await this.sendOnceToUser(
+            userId,
+            `goal-deadline:${goal._id}:${weekKey}`,
+            {
+              title: `${goal.title} deadline is near`,
+              body: `Deadline is ${this.goalDeadlineLabel(daysLeft)}. Add a top-up to stay on track.`,
+              data: {
+                type: "goal_deadline_nudge",
+                goalId: goal._id,
+                daysLeft: String(daysLeft),
+              },
+            },
+            10,
+          );
+          continue;
+        }
+      }
+
+      if (goal.updatedAt <= staleCutoff) {
+        await this.sendOnceToUser(
+          userId,
+          `goal-stalled:${goal._id}:${weekKey}`,
+          {
+            title: `Keep momentum on ${goal.title}`,
+            body: "No recent progress was detected. Even a small contribution keeps momentum.",
+            data: {
+              type: "goal_stalled_nudge",
+              goalId: goal._id,
+            },
+          },
+          10,
+        );
+      }
     }
   }
 
@@ -855,6 +1134,50 @@ export class NotificationsService {
     return `₹${amount.toFixed(amount % 1 == 0 ? 0 : 2)}`;
   }
 
+  private shortDateLabel(date: Date): string {
+    return date.toLocaleDateString("en-IN", {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  private normalizeDescription(value: string): string {
+    return value.trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
+  private amountToCents(value: number): number {
+    return Math.round(value * 100);
+  }
+
+  private recurringMatchKey(
+    userId: string,
+    date: Date,
+    description: string,
+    category: string,
+    amount: number,
+  ): string {
+    return [
+      userId,
+      this.dateKey(date),
+      category,
+      this.normalizeDescription(description),
+      this.amountToCents(amount),
+    ].join(":");
+  }
+
+  private highestReachedGoalMilestone(progressPercent: number): number | null {
+    const reached = [...this.goalMilestones]
+      .reverse()
+      .find((threshold) => progressPercent >= threshold);
+    return reached ?? null;
+  }
+
+  private goalDeadlineLabel(daysLeft: number): string {
+    if (daysLeft <= 0) return "today";
+    if (daysLeft === 1) return "in 1 day";
+    return `in ${daysLeft} days`;
+  }
+
   private categoryLabel(categoryKey: string): string {
     if (!categoryKey) return "Category";
     const words = categoryKey
@@ -892,7 +1215,11 @@ export class NotificationsService {
     );
   }
 
-  private nextOccurrence(from: Date, rule: string): Date {
+  private nextOccurrence(
+    from: Date,
+    rule: string,
+    recurringDueDay?: number | null,
+  ): Date {
     const next = new Date(from);
     switch (rule) {
       case "daily":
@@ -902,6 +1229,9 @@ export class NotificationsService {
         next.setDate(next.getDate() + 7);
         break;
       case "monthly":
+        if (typeof recurringDueDay === "number") {
+          return this.nextMonthlyOccurrence(from, recurringDueDay);
+        }
         next.setMonth(next.getMonth() + 1);
         break;
       case "yearly":
@@ -912,6 +1242,17 @@ export class NotificationsService {
         break;
     }
     return next;
+  }
+
+  private nextMonthlyOccurrence(from: Date, recurringDueDay: number): Date {
+    const targetMonth = new Date(from.getFullYear(), from.getMonth() + 1, 1);
+    const daysInMonth = new Date(
+      targetMonth.getFullYear(),
+      targetMonth.getMonth() + 1,
+      0,
+    ).getDate();
+    const dueDay = Math.min(Math.max(recurringDueDay, 1), daysInMonth);
+    return new Date(targetMonth.getFullYear(), targetMonth.getMonth(), dueDay);
   }
 
   private computeGroupBalances(
@@ -973,7 +1314,10 @@ export class NotificationsService {
       });
       return true;
     } catch (error) {
-      if (error instanceof MongoServerError && error.code === DB_ERROR_CODES.MONGO_DUPLICATE_KEY_ERROR) {
+      if (
+        error instanceof MongoServerError &&
+        error.code === DB_ERROR_CODES.MONGO_DUPLICATE_KEY_ERROR
+      ) {
         return false;
       }
       throw error;
@@ -1029,7 +1373,11 @@ export class NotificationsService {
 
     const staleTokens: string[] = [];
 
-    for (let i = 0; i < tokens.length; i += NOTIFICATION_CONFIG.FCM_BATCH_SIZE) {
+    for (
+      let i = 0;
+      i < tokens.length;
+      i += NOTIFICATION_CONFIG.FCM_BATCH_SIZE
+    ) {
       const batch = tokens.slice(i, i + NOTIFICATION_CONFIG.FCM_BATCH_SIZE);
       const response = await this.messaging.sendEachForMulticast({
         tokens: batch,

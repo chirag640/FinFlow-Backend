@@ -529,6 +529,35 @@ export class SyncService {
               userId,
             };
 
+            if (!expense.isRecurring || expense.recurringRule !== "monthly") {
+              updateDoc.recurringDueDay = null;
+            } else if (expense.recurringDueDay !== undefined) {
+              updateDoc.recurringDueDay = expense.recurringDueDay ?? null;
+            }
+
+            const hasExternalReceiptRef =
+              !!expense.receiptImageUrl?.trim() ||
+              !!expense.receiptStorageKey?.trim();
+
+            if (hasExternalReceiptRef) {
+              updateDoc.receiptImageBase64 = null;
+            } else if (expense.receiptImageBase64 !== undefined) {
+              updateDoc.receiptImageBase64 = expense.receiptImageBase64 ?? null;
+            }
+            if (expense.receiptImageMimeType !== undefined) {
+              updateDoc.receiptImageMimeType =
+                expense.receiptImageMimeType ?? null;
+            }
+            if (expense.receiptImageUrl !== undefined) {
+              updateDoc.receiptImageUrl = expense.receiptImageUrl ?? null;
+            }
+            if (expense.receiptStorageKey !== undefined) {
+              updateDoc.receiptStorageKey = expense.receiptStorageKey ?? null;
+            }
+            if (expense.receiptOcrText !== undefined) {
+              updateDoc.receiptOcrText = expense.receiptOcrText ?? null;
+            }
+
             if (existing) {
               operations.push({
                 updateOne: {

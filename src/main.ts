@@ -23,6 +23,16 @@ setDefaultResultOrder("ipv4first");
 
 async function bootstrap() {
   const port = Number(process.env.PORT) || 3000;
+  const isProduction =
+    (process.env.NODE_ENV ?? "").toLowerCase() === "production";
+  finalizeEnvSafety(isProduction);
+  const enableSwagger =
+    (process.env.ENABLE_SWAGGER ?? "").toLowerCase() === "true" ||
+    !isProduction;
+  const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 
   const app = await NestFactory.create(AppModule, {
     logger: ["error", "warn", "log"],
@@ -36,7 +46,7 @@ async function bootstrap() {
       service: "FinFlow API",
       status: "ok",
       health: "/api/v1/health",
-      docs: process.env.NODE_ENV !== "production" ? "/api/docs" : null,
+      docs: enableSwagger ? "/api/docs" : null,
     });
   });
   rawApp.head("/", (_req: any, res: any) => res.status(200).end());
@@ -55,7 +65,7 @@ async function bootstrap() {
 
   // CORS — allow Flutter web + mobile dev proxy
   app.enableCors({
-    origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:3000"],
+    origin: corsOrigins.length > 0 ? corsOrigins : ["http://localhost:3000"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
@@ -81,7 +91,7 @@ async function bootstrap() {
   );
 
   // Swagger  →  /api/docs  (dev only — not exposed in production)
-  if (process.env.NODE_ENV !== "production") {
+  if (enableSwagger) {
     const config = new DocumentBuilder()
       .setTitle("FinFlow API")
       .setDescription("FinFlow — Your All-in-One Financial OS")
@@ -104,6 +114,15 @@ async function bootstrap() {
   // Listen on all interfaces so Docker port-mapping works
   await app.listen(port, "0.0.0.0");
   console.log(`🚀  FinFlow API  →  http://localhost:${port}/api/v1`);
+}
+
+function finalizeEnvSafety(isProduction: boolean): void {
+  if (!isProduction) return;
+
+  const hasCorsOrigin = (process.env.CORS_ORIGIN ?? "").trim().length > 0;
+  if (!hasCorsOrigin) {
+    throw new Error("CORS_ORIGIN must be set in production.");
+  }
 }
 
 bootstrap();

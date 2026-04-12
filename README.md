@@ -18,6 +18,37 @@ FinFlow Backend is a NestJS REST API that powers authentication, expenses, budge
 - Health check: `/api/v1/health`
 - FCM health check: `/api/v1/health/fcm`
 
+## API Rate Limiting (PR-21)
+
+Throttling is enforced by Nest `@nestjs/throttler` with a global guard.
+
+Tracker key semantics:
+
+- Authenticated requests are tracked by `user:<userId>`.
+- Unauthenticated requests fall back to `ip:<clientIp>`.
+- When `x-forwarded-for` is present, the first forwarded IP is used.
+
+Global default quota:
+
+- `100` requests per `60` seconds per tracker key.
+
+Endpoint-specific overrides:
+
+- `POST /auth/register`: `3` requests per `60` seconds.
+- `POST /auth/login`: `10` requests per `60` seconds.
+- `POST /auth/verify-email`: `10` requests per `60` seconds.
+- `POST /auth/resend-otp`: `3` requests per `3600` seconds.
+- `POST /auth/forgot-password`: `3` requests per `3600` seconds.
+- `POST /auth/reset-password`: `10` requests per `3600` seconds.
+- `GET /users/search`: `20` requests per `60` seconds.
+- `POST /users/pin/verify`: `10` requests per `60` seconds.
+
+Reset semantics:
+
+- Quotas reset automatically when the endpoint's TTL window elapses.
+- Exceeding quota returns HTTP `429 Too Many Requests`.
+- Limits are applied per tracker key, so one user's quota does not consume another user's quota.
+
 ## Core Features
 
 - Auth: register, login, refresh, logout, profile retrieval
@@ -107,6 +138,37 @@ Backend now supports push notifications for:
 
 If Firebase credentials are missing, push notifications are skipped safely and API behavior remains unchanged.
 
+## Receipt Storage (FI-01)
+
+Receipt uploads use signed upload intents:
+
+- `POST /api/v1/expenses/receipts/upload-intent`
+- `POST /api/v1/expenses/receipts/upload`
+
+Read URLs are served through:
+
+- `GET /api/v1/expenses/receipts/file/:encodedStorageKey`
+
+Storage provider modes:
+
+- `RECEIPT_STORAGE_PROVIDER=local` (default): stores files under `RECEIPT_STORAGE_DIR`.
+- `RECEIPT_STORAGE_PROVIDER=s3`: stores blobs in S3-compatible object storage.
+
+Signed-read policy:
+
+- `RECEIPT_SIGN_READ_URLS=true` keeps S3 objects private and issues short-lived signed reads.
+- `RECEIPT_SIGNED_READ_TTL_SECONDS` controls signed-read lifetime.
+- `RECEIPT_PUBLIC_BASE_URL` can be used when reads are intentionally public (`RECEIPT_SIGN_READ_URLS=false`).
+
+S3 configuration keys:
+
+- `RECEIPT_S3_BUCKET`
+- `RECEIPT_S3_REGION`
+- `RECEIPT_S3_ENDPOINT` (optional, for S3-compatible vendors)
+- `RECEIPT_S3_ACCESS_KEY_ID` / `RECEIPT_S3_SECRET_ACCESS_KEY` (optional if runtime IAM is used)
+- `RECEIPT_S3_KEY_PREFIX`
+- `RECEIPT_S3_FORCE_PATH_STYLE`
+
 ## Run Locally
 
 1. Install dependencies:
@@ -181,6 +243,23 @@ Health check path for Render:
 - `npm run start:prod` - run compiled output
 - `npm run lint` - lint and fix
 - `npm run test` - run unit tests
+- `npm run loadtest:baseline` - run baseline HTTP load test runner (configurable via CLI args)
+
+Load test example:
+
+```bash
+npm.cmd run loadtest:baseline -- --url=http://localhost:3000/api/v1/health --requests=500 --concurrency=25
+```
+
+CI staging gate note:
+
+- `.github/workflows/ci.yml` runs `staging-load-gate` on `main` pushes.
+- Configure repository variable `FINFLOW_STAGING_BASE_URL` (without trailing `/api/v1`) so the gate can target `${FINFLOW_STAGING_BASE_URL}/api/v1/health`.
+
+Operational runbooks and plans:
+
+- `../docs/BACKUP_RESTORE_DR_RUNBOOK.md`
+- `../docs/LOAD_TEST_BASELINE_SLO.md`
 
 On this Windows setup, use `npm.cmd` for script execution in terminal commands.
 
@@ -199,6 +278,14 @@ Use VS Code task `Validate: All` or run checks manually:
 ```bash
 npm.cmd run build
 npm.cmd run lint
+```
+
+Local environment automation scripts (from this repo):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ../tools/ai/bootstrap-local-dev.ps1 -Validate
+powershell -ExecutionPolicy Bypass -File ../tools/ai/start-local-stack.ps1
+powershell -ExecutionPolicy Bypass -File ../tools/ai/stop-local-stack.ps1
 ```
 
 ## Troubleshooting

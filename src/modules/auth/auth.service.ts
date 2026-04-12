@@ -10,7 +10,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
-import { randomInt, randomUUID } from "crypto";
+import { createHash, randomInt, randomUUID } from "crypto";
 import { AUTH_CONFIG } from "../../common/constants";
 import { EncryptionService } from "../../common/services/encryption.service";
 import { DatabaseService } from "../../database/database.service";
@@ -194,8 +194,9 @@ export class AuthService {
     dto: LoginDto,
     sessionMeta?: SessionMeta,
   ): Promise<AuthResponseDto> {
+    const email = dto.email.trim().toLowerCase();
     const user = await this.db.users.findOne({
-      email: dto.email,
+      email,
       deletedAt: null,
     });
     if (!user || !user.passwordHash) {
@@ -252,7 +253,8 @@ export class AuthService {
       throw new BadRequestException("OTP expired — request a new one.");
     }
 
-    const valid = await bcrypt.compare(code, user.otpCode);
+    const normalizedCode = code.trim();
+    const valid = await bcrypt.compare(normalizedCode, user.otpCode);
     if (!valid) throw new BadRequestException("Incorrect OTP");
 
     await this.db.users.updateOne(
@@ -312,7 +314,11 @@ export class AuthService {
 
   // ── Forgot / Reset Password ───────────────────────────────────────────────
   async forgotPassword(email: string): Promise<void> {
-    const user = await this.db.users.findOne({ email, deletedAt: null });
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.db.users.findOne({
+      email: normalizedEmail,
+      deletedAt: null,
+    });
     // Prevent account enumeration: always return success.
     if (!user || !user.passwordHash) return;
 
@@ -351,7 +357,11 @@ export class AuthService {
     code: string,
     newPassword: string,
   ): Promise<void> {
-    const user = await this.db.users.findOne({ email, deletedAt: null });
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.db.users.findOne({
+      email: normalizedEmail,
+      deletedAt: null,
+    });
     if (!user || !user.passwordResetCode || !user.passwordResetExpiresAt) {
       throw new BadRequestException("Invalid or expired reset code");
     }
@@ -390,7 +400,11 @@ export class AuthService {
   ): Promise<AuthResponseDto> {
     this.verifyRefreshTokenSignature(refreshToken);
 
-    const stored = await this.db.refreshTokens.findOne({ token: refreshToken });
+    const stored = await this.db.refreshTokens.findOne({
+      token: {
+        $in: this.refreshTokenCandidates(refreshToken),
+      },
+    });
     if (!stored || new Date() > new Date(stored.expiresAt)) {
       if (stored) await this.db.refreshTokens.deleteOne({ _id: stored._id });
       throw new UnauthorizedException("Refresh token expired or invalid");
@@ -420,7 +434,11 @@ export class AuthService {
 
   // ── Logout ──────────────────────────────────────────────────────────────────
   async logout(refreshToken: string): Promise<void> {
-    await this.db.refreshTokens.deleteMany({ token: refreshToken });
+    await this.db.refreshTokens.deleteMany({
+      token: {
+        $in: this.refreshTokenCandidates(refreshToken),
+      },
+    });
   }
 
   async listSessions(userId: string): Promise<AuthSessionDto[]> {
@@ -739,7 +757,11 @@ export class AuthService {
     // Rotate: delete only the presented refresh token (not all sessions for
     // this user) so other devices remain logged in independently.
     if (opts?.oldRefreshToken) {
-      await this.db.refreshTokens.deleteOne({ token: opts.oldRefreshToken });
+      await this.db.refreshTokens.deleteOne({
+        token: {
+          $in: this.refreshTokenCandidates(opts.oldRefreshToken),
+        },
+      });
     }
 
     const sessionId = opts?.existingSessionId ?? randomUUID();
@@ -748,7 +770,7 @@ export class AuthService {
     await this.db.refreshTokens.insertOne({
       _id: sessionId,
       createdAt: now,
-      token: refreshValue,
+      token: this.hashRefreshToken(refreshValue),
       userId: user._id,
       expiresAt,
       lastUsedAt: now,
@@ -794,6 +816,15 @@ export class AuthService {
             ? value * 3_600_000
             : value * 86_400_000; // 'd'
     return new Date(Date.now() + ms);
+  }
+
+  private hashRefreshToken(token: string): string {
+    return createHash("sha256").update(token).digest("hex");
+  }
+
+  private refreshTokenCandidates(refreshToken: string): string[] {
+    const hashed = this.hashRefreshToken(refreshToken);
+    return hashed === refreshToken ? [refreshToken] : [hashed, refreshToken];
   }
 
   private getRequiredSecret(name: "JWT_SECRET" | "JWT_REFRESH_SECRET"): string {

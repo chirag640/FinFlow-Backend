@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 import { NextFunction, Request, Response } from "express";
+import { verify as verifyJwt } from "jsonwebtoken";
 
 type IdempotencyEntry = {
   requestHash: string;
@@ -12,6 +13,8 @@ type IdempotencyEntry = {
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_CACHE_ITEMS = 2000;
 const cache = new Map<string, IdempotencyEntry>();
+
+let accessSecretCandidates: string[] | null = null;
 
 function cleanupCache(now: number): void {
   for (const [k, v] of cache.entries()) {
@@ -32,9 +35,66 @@ function getUserScope(req: Request): string {
   const user = (req as Request & { user?: Record<string, unknown> }).user;
   const userId =
     (typeof user?._id === "string" && user._id) ||
-    (typeof user?.id === "string" && user.id) ||
-    "anonymous";
-  return userId;
+    (typeof user?.id === "string" && user.id);
+  if (typeof userId === "string" && userId.length > 0) {
+    return userId;
+  }
+
+  const tokenUserId = userIdFromBearerToken(req);
+  if (tokenUserId) {
+    return tokenUserId;
+  }
+
+  return "anonymous";
+}
+
+function userIdFromBearerToken(req: Request): string | null {
+  const authHeader =
+    (req.headers.authorization as string | undefined) ??
+    req.header("authorization") ??
+    req.header("Authorization") ??
+    "";
+  if (!authHeader.toLowerCase().startsWith("bearer ")) {
+    return null;
+  }
+
+  const token = authHeader.slice(7).trim();
+  if (!token) return null;
+
+  for (const secret of resolveAccessSecrets()) {
+    try {
+      const payload = verifyJwt(token, secret, {
+        ignoreExpiration: true,
+      }) as { sub?: unknown };
+      if (typeof payload?.sub === "string" && payload.sub.length > 0) {
+        return payload.sub;
+      }
+    } catch {
+      // Try next configured secret.
+    }
+  }
+
+  return null;
+}
+
+function resolveAccessSecrets(): string[] {
+  if (accessSecretCandidates) {
+    return accessSecretCandidates;
+  }
+
+  const primary = process.env.JWT_SECRET?.trim();
+  if (!primary) {
+    accessSecretCandidates = [];
+    return accessSecretCandidates;
+  }
+
+  const previous = (process.env.JWT_SECRET_PREVIOUS ?? "")
+    .split(",")
+    .map((secret) => secret.trim())
+    .filter((secret) => secret.length > 0 && secret !== primary);
+
+  accessSecretCandidates = [primary, ...previous];
+  return accessSecretCandidates;
 }
 
 function requestHash(req: Request, scope: string): string {

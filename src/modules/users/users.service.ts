@@ -217,7 +217,23 @@ export class UsersService {
     };
   }
 
-  async deleteAccount(id: string) {
+  async deleteAccount(id: string, currentPassword: string) {
+    const user = await this.db.users.findOne({ _id: id, deletedAt: null });
+    if (!user) {
+      throw new NotFoundException("User not found or already deleted");
+    }
+
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        "Password verification is unavailable for this account",
+      );
+    }
+
+    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!valid) {
+      throw new BadRequestException("Current password is incorrect");
+    }
+
     const now = new Date();
     const suffix = `${id}_${now.getTime()}`
       .toLowerCase()

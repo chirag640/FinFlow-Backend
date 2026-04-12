@@ -6,9 +6,17 @@ import {
   HttpStatus,
   Post,
 } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiCreatedResponse,
+  ApiNoContentResponse,
+  ApiOperation,
+  ApiTags,
+} from "@nestjs/swagger";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { NotificationsService } from "../notifications/notifications.service";
+import { RegisterDeviceResponseDto } from "./dto/notifications-response.dto";
 import { RegisterDeviceDto } from "./dto/register-device.dto";
 import { RemoveDeviceDto } from "./dto/remove-device.dto";
 
@@ -20,6 +28,8 @@ export class NotificationsController {
 
   @Post("devices")
   @ApiOperation({ summary: "Register or refresh FCM device token" })
+  @ApiBody({ type: RegisterDeviceDto })
+  @ApiCreatedResponse({ type: RegisterDeviceResponseDto })
   registerDevice(
     @CurrentUser("id") userId: string,
     @Body() dto: RegisterDeviceDto,
@@ -30,6 +40,8 @@ export class NotificationsController {
   @Delete("devices")
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: "Unregister FCM device token" })
+  @ApiBody({ type: RemoveDeviceDto })
+  @ApiNoContentResponse({ description: "Device token unregistered" })
   unregisterDevice(
     @CurrentUser("id") userId: string,
     @Body() dto: RemoveDeviceDto,

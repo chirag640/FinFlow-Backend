@@ -75,6 +75,21 @@ export const NOTIFICATION_CONFIG = {
   BUDGET_ALERT_PERCENTAGES: [100, 90, 70] as const,
 
   /**
+   * Goal milestone percentages used for engagement notifications.
+   */
+  GOAL_MILESTONE_PERCENTAGES: [25, 50, 75, 100] as const,
+
+  /**
+   * Deadline horizon (in days) for goal deadline reminder nudges.
+   */
+  GOAL_DEADLINE_SOON_DAYS: 7,
+
+  /**
+   * Number of inactivity days before stalled-goal nudges are sent.
+   */
+  GOAL_STALE_DAYS: 14,
+
+  /**
    * Number of days of inactivity before sending inactive member notification
    * Default: 14 days
    */
@@ -85,6 +100,16 @@ export const NOTIFICATION_CONFIG = {
    * Default: 300 (currency units)
    */
   CATEGORY_SPIKE_MIN_AMOUNT: 300,
+
+  /**
+   * Minimum missed days before recurring verification alert is triggered.
+   */
+  RECURRING_MISSING_MIN_DAYS: 2,
+
+  /**
+   * Lookback window for matching manual recurring logs without parent linkage.
+   */
+  RECURRING_MISSING_LOOKBACK_DAYS: 45,
 
   /**
    * FCM (Firebase Cloud Messaging) batch size for sending notifications
@@ -244,4 +269,73 @@ export const RETENTION_CONFIG = {
    * Max records to permanently delete per cron run to avoid blocking.
    */
   PERMANENT_DELETE_BATCH_SIZE: 500,
+} as const;
+
+/**
+ * Receipt upload/storage configuration
+ */
+export const RECEIPT_CONFIG = {
+  /**
+   * Maximum allowed receipt upload size in bytes.
+   */
+  MAX_UPLOAD_BYTES: 1_500_000,
+
+  /**
+   * Signed upload intent validity window.
+   */
+  INTENT_TTL_MS: 10 * 60_000,
+
+  /**
+   * Storage backend provider for receipt blobs.
+   * Supported values: local, s3
+   */
+  STORAGE_PROVIDER:
+    (process.env.RECEIPT_STORAGE_PROVIDER?.trim().toLowerCase() || "local") as
+      | "local"
+      | "s3",
+
+  /**
+   * Base URL used for publicly addressable receipt links.
+   * Example: https://cdn.example.com
+   */
+  PUBLIC_BASE_URL: process.env.RECEIPT_PUBLIC_BASE_URL?.trim() || "",
+
+  /**
+   * Whether receipt links should be signed and short-lived.
+   */
+  SIGN_READ_URLS:
+    process.env.RECEIPT_SIGN_READ_URLS?.trim().toLowerCase() !== "false",
+
+  /**
+   * Signed-read URL TTL in seconds (parsed in service with validation).
+   */
+  SIGNED_READ_TTL_SECONDS:
+    process.env.RECEIPT_SIGNED_READ_TTL_SECONDS?.trim() || "900",
+
+  /**
+   * Local object storage root (relative to process cwd unless absolute).
+   */
+  STORAGE_ROOT_DIR: process.env.RECEIPT_STORAGE_DIR?.trim() || "storage",
+
+  /**
+   * S3-compatible storage settings (used when STORAGE_PROVIDER=s3).
+   */
+  S3_BUCKET: process.env.RECEIPT_S3_BUCKET?.trim() || "",
+  S3_REGION: process.env.RECEIPT_S3_REGION?.trim() || "",
+  S3_ENDPOINT: process.env.RECEIPT_S3_ENDPOINT?.trim() || "",
+  S3_ACCESS_KEY_ID: process.env.RECEIPT_S3_ACCESS_KEY_ID?.trim() || "",
+  S3_SECRET_ACCESS_KEY: process.env.RECEIPT_S3_SECRET_ACCESS_KEY?.trim() || "",
+  S3_KEY_PREFIX: process.env.RECEIPT_S3_KEY_PREFIX?.trim() || "receipts",
+  S3_FORCE_PATH_STYLE:
+    process.env.RECEIPT_S3_FORCE_PATH_STYLE?.trim().toLowerCase() === "true",
+
+  /**
+   * MIME types accepted for receipt uploads.
+   */
+  ALLOWED_MIME_TYPES: [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+  ] as const,
 } as const;

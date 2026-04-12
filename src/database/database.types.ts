@@ -16,6 +16,7 @@ export interface UserDoc {
   name: string; // stored encrypted
   avatarUrl?: string | null;
   passwordHash?: string | null;
+  recurringDueDay?: number | null;
   googleId?: string | null;
   role: Role;
   currency: string;
@@ -37,7 +38,7 @@ export interface UserDoc {
 export interface RefreshTokenDoc {
   _id: string;
   createdAt: Date;
-  token: string;
+  token: string; // Stored as SHA-256 hash of the raw refresh token.
   expiresAt: Date;
   userId: string;
   lastUsedAt?: Date;
@@ -101,7 +102,13 @@ export interface ExpenseDoc {
   isIncome: boolean;
   isRecurring: boolean;
   recurringRule?: string | null;
+  recurringDueDay?: number | null;
   recurringParentId?: string | null;
+  receiptImageBase64?: string | null;
+  receiptImageUrl?: string | null;
+  receiptStorageKey?: string | null;
+  receiptImageMimeType?: string | null;
+  receiptOcrText?: string | null;
   userId: string;
 }
 
@@ -170,6 +177,36 @@ export interface GroupExpenseDoc {
   shares: Array<{ memberId: string; amount: number }>;
   groupId: string;
   isSettlement?: boolean;
+}
+
+export type GroupSettlementAuditStatus = "recorded" | "disputed" | "resolved";
+
+export interface GroupSettlementDisputeDoc {
+  status: "open" | "resolved";
+  reason: string;
+  note?: string | null;
+  disputedAt: Date;
+  disputedByUserId: string;
+  resolvedAt?: Date | null;
+  resolvedByUserId?: string | null;
+  resolutionNote?: string | null;
+}
+
+export interface GroupSettlementAuditDoc {
+  _id: string;
+  createdAt: Date;
+  updatedAt: Date;
+
+  groupId: string;
+  settlementExpenseId: string;
+  fromMemberId: string;
+  toMemberId: string;
+  amount: number;
+  settledAt: Date;
+  recordedByUserId: string;
+
+  status: GroupSettlementAuditStatus;
+  dispute?: GroupSettlementDisputeDoc;
 }
 
 export interface SyncPushIdempotencyDoc {

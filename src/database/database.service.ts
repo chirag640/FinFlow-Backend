@@ -14,6 +14,7 @@ import {
   GroupDoc,
   GroupExpenseDoc,
   GroupMemberDoc,
+  GroupSettlementAuditDoc,
   NotificationEventDoc,
   PushDeviceDoc,
   RefreshTokenDoc,
@@ -81,6 +82,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
   get groupExpenses(): Collection<GroupExpenseDoc> {
     return this.db.collection<GroupExpenseDoc>("GroupExpense");
+  }
+  get groupSettlementAudits(): Collection<GroupSettlementAuditDoc> {
+    return this.db.collection<GroupSettlementAuditDoc>("GroupSettlementAudit");
   }
   get syncPushIdempotency(): Collection<SyncPushIdempotencyDoc> {
     return this.db.collection<SyncPushIdempotencyDoc>("SyncPushIdempotency");
@@ -187,10 +191,28 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       this.groupExpenses.createIndex({ groupId: 1, deletedAt: 1, date: -1 }),
     );
     await safe(() =>
-      this.groupExpenses.createIndex({ groupId: 1, deletedAt: 1, createdAt: -1 }),
+      this.groupExpenses.createIndex({
+        groupId: 1,
+        deletedAt: 1,
+        createdAt: -1,
+      }),
     );
     await safe(() =>
       this.groupExpenses.createIndex({ groupId: 1, deletedAt: 1, amount: -1 }),
+    );
+
+    await safe(() => this.groupSettlementAudits.createIndex({ groupId: 1 }));
+    await safe(() =>
+      this.groupSettlementAudits.createIndex({ groupId: 1, settledAt: -1 }),
+    );
+    await safe(() =>
+      this.groupSettlementAudits.createIndex(
+        { settlementExpenseId: 1 },
+        { unique: true },
+      ),
+    );
+    await safe(() =>
+      this.groupSettlementAudits.createIndex({ status: 1, updatedAt: -1 }),
     );
 
     await safe(() =>
@@ -212,10 +234,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     );
     await safe(() => this.emailOutbox.createIndex({ userId: 1 }));
     await safe(() =>
-      this.emailOutbox.createIndex(
-        { expiresAt: 1 },
-        { expireAfterSeconds: 0 },
-      ),
+      this.emailOutbox.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     );
 
     this.logger.log("MongoDB indexes ensured");

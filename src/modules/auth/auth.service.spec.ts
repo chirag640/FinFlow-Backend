@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, UnauthorizedException } from "@nestjs/common";
+import { createHash } from "crypto";
 import { AuthService } from "./auth.service";
 
 describe("AuthService.refresh", () => {
@@ -90,6 +91,11 @@ describe("AuthService.refresh", () => {
     });
 
     expect(first.refreshToken).toBe("rt-new");
+    expect(db.refreshTokens.insertOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: createHash("sha256").update("rt-new").digest("hex"),
+      }),
+    );
 
     await expect(service.refresh("rt-old")).rejects.toBeInstanceOf(
       UnauthorizedException,
@@ -227,7 +233,87 @@ describe("AuthService.logout", () => {
     await service.logout("rt-logout");
 
     expect(db.refreshTokens.deleteMany).toHaveBeenCalledWith({
-      token: "rt-logout",
+      token: {
+        $in: [
+          createHash("sha256").update("rt-logout").digest("hex"),
+          "rt-logout",
+        ],
+      },
+    });
+  });
+});
+
+describe("AuthService email normalization", () => {
+  let service: AuthService;
+  let db: any;
+  let jwtService: any;
+  let encryption: any;
+
+  beforeEach(() => {
+    db = {
+      users: {
+        findOne: jest.fn(),
+        updateOne: jest.fn(),
+      },
+      refreshTokens: {
+        findOne: jest.fn(),
+        deleteOne: jest.fn(),
+        deleteMany: jest.fn(),
+        insertOne: jest.fn(),
+      },
+    };
+
+    jwtService = {
+      sign: jest.fn(),
+      verify: jest.fn(),
+    };
+
+    encryption = {
+      decrypt: jest.fn((v: string) => v),
+    };
+
+    process.env.JWT_SECRET = "test-access-secret";
+    process.env.JWT_REFRESH_SECRET = "test-refresh-secret";
+
+    service = new AuthService(db, jwtService, encryption);
+  });
+
+  it("normalizes email for login lookup", async () => {
+    db.users.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.login({ email: "  USER@Example.COM ", password: "password123" }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(db.users.findOne).toHaveBeenCalledWith({
+      email: "user@example.com",
+      deletedAt: null,
+    });
+  });
+
+  it("normalizes email for forgot-password lookup", async () => {
+    db.users.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.forgotPassword("  USER@Example.COM "),
+    ).resolves.toBeUndefined();
+
+    expect(db.users.findOne).toHaveBeenCalledWith({
+      email: "user@example.com",
+      deletedAt: null,
+    });
+  });
+
+  it("normalizes email for reset-password lookup", async () => {
+    db.users.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.resetPassword("  USER@Example.COM ", "123456", "NewPass123"),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(db.users.findOne).toHaveBeenCalledWith({
+      email: "user@example.com",
+      deletedAt: null,
     });
   });
 });

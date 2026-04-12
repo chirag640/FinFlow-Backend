@@ -1,8 +1,13 @@
 import { Controller, Get } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
+import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Public } from "../../common/decorators/public.decorator";
-import { NotificationsService } from "../notifications/notifications.service";
 import { RetentionService } from "../../common/services/retention.service";
+import { NotificationsService } from "../notifications/notifications.service";
+import {
+  FcmHealthResponseDto,
+  HealthResponseDto,
+  RetentionHealthResponseDto,
+} from "./dto/health-response.dto";
 
 @ApiTags("System")
 @Controller({ path: "health", version: "1" })
@@ -15,7 +20,7 @@ export class HealthController {
   @Public()
   @Get()
   @ApiOperation({ summary: "Health check" })
-  @ApiResponse({ status: 200, description: "System is operational" })
+  @ApiOkResponse({ type: HealthResponseDto })
   getHealth() {
     return {
       status: "ok",
@@ -27,7 +32,7 @@ export class HealthController {
   @Public()
   @Get("fcm")
   @ApiOperation({ summary: "Firebase Cloud Messaging health check" })
-  @ApiResponse({ status: 200, description: "Returns FCM configuration status" })
+  @ApiOkResponse({ type: FcmHealthResponseDto })
   getFcmHealth() {
     return {
       status: "ok",
@@ -39,10 +44,7 @@ export class HealthController {
   @Public()
   @Get("retention")
   @ApiOperation({ summary: "Data retention policy information" })
-  @ApiResponse({
-    status: 200,
-    description: "Returns soft-delete retention policy",
-  })
+  @ApiOkResponse({ type: RetentionHealthResponseDto })
   getRetentionPolicy() {
     return {
       status: "ok",

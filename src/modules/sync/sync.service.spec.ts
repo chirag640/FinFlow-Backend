@@ -444,6 +444,28 @@ describe("SyncService", () => {
     );
   });
 
+  it("purges expired idempotency records and reports purge metric", async () => {
+    db.syncPushIdempotency.deleteMany.mockResolvedValue({ deletedCount: 4 });
+
+    await service.purgeExpiredIdempotencyRecords();
+
+    expect(db.syncPushIdempotency.deleteMany).toHaveBeenCalledWith({
+      expiresAt: { $lte: expect.any(Date) },
+    });
+    expect(metrics.recordIdempotencyPurge).toHaveBeenCalledWith(4);
+  });
+
+  it("swallows purge errors and does not throw", async () => {
+    db.syncPushIdempotency.deleteMany.mockRejectedValue(
+      new Error("db temporarily unavailable"),
+    );
+
+    await expect(
+      service.purgeExpiredIdempotencyRecords(),
+    ).resolves.toBeUndefined();
+    expect(metrics.recordIdempotencyPurge).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported sync version for push and pull", async () => {
     await expect(
       service.push(

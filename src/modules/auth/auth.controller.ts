@@ -9,7 +9,19 @@ import {
   Post,
   Req,
 } from "@nestjs/common";
-import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBody,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiNoContentResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+  ApiUnauthorizedResponse,
+} from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { IsUUID } from "class-validator";
 import { Request } from "express";
@@ -17,10 +29,11 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
 import { EncryptionService } from "../../common/services/encryption.service";
 import { AuthService } from "./auth.service";
-import { AuthResponseDto } from "./dto/auth-response.dto";
+import { AuthResponseDto, AuthUserDto } from "./dto/auth-response.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
+import { RegisterResponseDto } from "./dto/register-response.dto";
 import { RegisterDto } from "./dto/register.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { AuthSessionDto, RevokeSessionDto } from "./dto/session.dto";
@@ -70,11 +83,12 @@ export class AuthController {
   @Post("register")
   @Throttle({ default: { ttl: 60_000, limit: 3 } })
   @ApiOperation({ summary: "Register with email + password" })
-  @ApiResponse({
-    status: 201,
+  @ApiBody({ type: RegisterDto })
+  @ApiCreatedResponse({
+    type: RegisterResponseDto,
     description: "Registration initiated — verify email to receive tokens",
   })
-  @ApiResponse({ status: 409, description: "Email already in use" })
+  @ApiConflictResponse({ description: "Email or username already in use" })
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
@@ -85,9 +99,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @ApiOperation({ summary: "Login with email + password" })
-  @ApiResponse({ status: 200, type: AuthResponseDto })
-  @ApiResponse({ status: 401, description: "Invalid credentials" })
-  @ApiResponse({ status: 403, description: "Email not verified" })
+  @ApiBody({ type: LoginDto })
+  @ApiOkResponse({ status: 200, type: AuthResponseDto })
+  @ApiUnauthorizedResponse({ description: "Invalid credentials" })
+  @ApiForbiddenResponse({ description: "Email not verified" })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<AuthResponseDto> {
     return this.authService.login(dto, this.buildSessionMeta(req));
   }
@@ -98,7 +113,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @ApiOperation({ summary: "Verify email with 6-digit OTP" })
-  @ApiResponse({ status: 200, type: AuthResponseDto })
+  @ApiBody({ type: VerifyEmailDto })
+  @ApiOkResponse({ status: 200, type: AuthResponseDto })
   @ApiResponse({ status: 400, description: "Invalid or expired OTP" })
   verifyEmail(
     @CurrentUser() user: any,
@@ -123,7 +139,8 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle({ default: { ttl: 3_600_000, limit: 3 } })
   @ApiOperation({ summary: "Resend email verification OTP" })
-  @ApiResponse({ status: 204, description: "OTP re-sent" })
+  @ApiBody({ type: ResendOtpDto })
+  @ApiNoContentResponse({ description: "OTP re-sent" })
   resendOtp(@Body() body: ResendOtpDto): Promise<void> {
     return this.authService.resendOtp(body.userId);
   }
@@ -134,7 +151,8 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle({ default: { ttl: 3_600_000, limit: 3 } })
   @ApiOperation({ summary: "Send password reset code to email" })
-  @ApiResponse({
+  @ApiBody({ type: ForgotPasswordDto })
+  @ApiNoContentResponse({
     status: 204,
     description: "Reset code sent (if email exists)",
   })
@@ -147,7 +165,11 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({ summary: "Reset password using emailed 6-digit code" })
-  @ApiResponse({ status: 204, description: "Password reset successful" })
+  @ApiBody({ type: ResetPasswordDto })
+  @ApiNoContentResponse({
+    status: 204,
+    description: "Password reset successful",
+  })
   resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
     return this.authService.resetPassword(dto.email, dto.code, dto.newPassword);
   }
@@ -157,8 +179,9 @@ export class AuthController {
   @Post("refresh")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Exchange refresh token for a new access token" })
-  @ApiResponse({ status: 200, description: "New access token" })
-  @ApiResponse({ status: 401, description: "Refresh token invalid/expired" })
+  @ApiBody({ type: RefreshTokenDto })
+  @ApiOkResponse({ status: 200, type: AuthResponseDto })
+  @ApiUnauthorizedResponse({ description: "Refresh token invalid/expired" })
   refresh(@Body() dto: RefreshTokenDto, @Req() req: Request) {
     return this.authService.refresh(
       dto.refreshToken,
@@ -173,7 +196,8 @@ export class AuthController {
   @Post("logout")
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: "Invalidate refresh token" })
-  @ApiResponse({ status: 204, description: "Logged out" })
+  @ApiBody({ type: RefreshTokenDto })
+  @ApiNoContentResponse({ status: 204, description: "Logged out" })
   logout(@Body() dto: RefreshTokenDto): Promise<void> {
     return this.authService.logout(dto.refreshToken);
   }
@@ -181,6 +205,7 @@ export class AuthController {
   // ── Me ─────────────────────────────────────────────────────────────────────
   @Get("me")
   @ApiOperation({ summary: "Return current authenticated user" })
+  @ApiOkResponse({ status: 200, type: AuthUserDto })
   me(@CurrentUser() user: SafeCurrentUser) {
     const safe: SafeCurrentUser = { ...user };
     const hasPin = safe.hasPin ?? Boolean(safe.pinVerifierHash || safe.pinHash);
@@ -204,7 +229,7 @@ export class AuthController {
 
   @Get("sessions")
   @ApiOperation({ summary: "List active login sessions for current user" })
-  @ApiResponse({ status: 200, type: [AuthSessionDto] })
+  @ApiOkResponse({ status: 200, type: [AuthSessionDto] })
   sessions(@CurrentUser("id") userId: string): Promise<AuthSessionDto[]> {
     return this.authService.listSessions(userId);
   }
@@ -212,7 +237,9 @@ export class AuthController {
   @Post("sessions/revoke")
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: "Revoke a specific login session" })
-  @ApiResponse({ status: 204, description: "Session revoked" })
+  @ApiBody({ type: RevokeSessionDto })
+  @ApiNoContentResponse({ status: 204, description: "Session revoked" })
+  @ApiNotFoundResponse({ description: "Session not found" })
   revokeSession(
     @CurrentUser("id") userId: string,
     @Body() body: RevokeSessionDto,
