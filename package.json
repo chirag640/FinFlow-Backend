@@ -23,6 +23,7 @@
     "test:cov": "jest --coverage",
     "test:coverage:check": "node ./node_modules/jest/bin/jest.js --coverage --runInBand --coverageReporters=text-summary",
     "loadtest:baseline": "node ./tools/loadtest/http_baseline.mjs",
+    "migrate:receipts": "node ./tools/migrations/migrate_receipt_base64_to_storage.mjs",
     "db:seed": "ts-node src/database/seed.ts"
   },
   "dependencies": {

@@ -160,6 +160,12 @@ Signed-read policy:
 - `RECEIPT_SIGNED_READ_TTL_SECONDS` controls signed-read lifetime.
 - `RECEIPT_PUBLIC_BASE_URL` can be used when reads are intentionally public (`RECEIPT_SIGN_READ_URLS=false`).
 
+Legacy embedded receipt migration:
+
+- Dry run: `npm.cmd run migrate:receipts -- --dry-run --batch-size=100`
+- Execute: `npm.cmd run migrate:receipts -- --batch-size=100`
+- Optional throttle: `--max-batches=<n>` for staged rollout windows
+
 S3 configuration keys:
 
 - `RECEIPT_S3_BUCKET`
