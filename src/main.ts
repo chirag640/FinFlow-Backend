@@ -1,4 +1,8 @@
-import { ValidationPipe, VersioningType } from "@nestjs/common";
+import {
+  INestApplication,
+  ValidationPipe,
+  VersioningType,
+} from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { setDefaultResultOrder } from "dns";
@@ -21,7 +25,7 @@ dotenvConfig({ path: join(__dirname, "..", ".env") });
 // Prefer IPv4 first for all DNS lookups in this process.
 setDefaultResultOrder("ipv4first");
 
-async function bootstrap() {
+function getRuntimeConfig() {
   const port = Number(process.env.PORT) || 3000;
   const isProduction =
     (process.env.NODE_ENV ?? "").toLowerCase() === "production";
@@ -33,6 +37,17 @@ async function bootstrap() {
     .split(",")
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
+
+  return {
+    port,
+    isProduction,
+    enableSwagger,
+    corsOrigins,
+  };
+}
+
+async function createApp(): Promise<INestApplication> {
+  const { enableSwagger, corsOrigins } = getRuntimeConfig();
 
   const app = await NestFactory.create(AppModule, {
     logger: ["error", "warn", "log"],
@@ -105,6 +120,16 @@ async function bootstrap() {
     SwaggerModule.setup("api/docs", app, doc, {
       swaggerOptions: { persistAuthorization: true },
     });
+  }
+
+  return app;
+}
+
+async function bootstrap() {
+  const { port, enableSwagger } = getRuntimeConfig();
+  const app = await createApp();
+
+  if (enableSwagger) {
     console.log(`📚  Swagger      →  http://localhost:${port}/api/docs`);
   }
 
@@ -116,6 +141,24 @@ async function bootstrap() {
   console.log(`🚀  FinFlow API  →  http://localhost:${port}/api/v1`);
 }
 
+let cachedServer: ((req: unknown, res: unknown) => unknown) | null = null;
+
+async function getServerlessHandler() {
+  if (cachedServer) {
+    return cachedServer;
+  }
+
+  const app = await createApp();
+  await app.init();
+  cachedServer = app.getHttpAdapter().getInstance();
+  return cachedServer;
+}
+
+export default async function handler(req: unknown, res: unknown) {
+  const server = await getServerlessHandler();
+  return server(req, res);
+}
+
 function finalizeEnvSafety(isProduction: boolean): void {
   if (!isProduction) return;
 
@@ -125,4 +168,6 @@ function finalizeEnvSafety(isProduction: boolean): void {
   }
 }
 
-bootstrap();
+if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+  void bootstrap();
+}

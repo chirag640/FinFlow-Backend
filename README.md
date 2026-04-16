@@ -241,6 +241,25 @@ Health check path for Render:
 
 `/api/v1/health`
 
+## Vercel Deployment Notes
+
+This repository now includes `vercel.json` that routes all incoming requests to
+`src/main.ts` as a Node serverless function.
+
+Important:
+
+- Do not set Vercel output directory to `dist` for this backend service.
+- Keep project root at `FinFlow-Backend`.
+- Set all required backend environment variables in Vercel Project Settings.
+
+If you previously saw:
+
+`No exports found in module "/var/task/src/main.js"`
+
+it means Vercel executed the file as a serverless function but did not find a
+handler export. `src/main.ts` now exports a default handler for Vercel while
+still supporting normal `npm run start:prod` hosting.
+
 ## Useful Scripts
 
 - `npm run build` - compile TypeScript to `dist`
