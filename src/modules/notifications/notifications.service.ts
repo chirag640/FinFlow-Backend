@@ -4,9 +4,9 @@ import { randomUUID } from "crypto";
 import * as admin from "firebase-admin";
 import { MongoServerError } from "mongodb";
 import {
-  DB_ERROR_CODES,
-  NOTIFICATION_CONFIG,
-  TIME_CONSTANTS,
+    DB_ERROR_CODES,
+    NOTIFICATION_CONFIG,
+    TIME_CONSTANTS,
 } from "../../common/constants";
 import { DatabaseService } from "../../database/database.service";
 import { GroupExpenseDoc, GroupMemberDoc } from "../../database/database.types";
@@ -1099,8 +1099,12 @@ export class NotificationsService {
   }
 
   private initializeFirebase() {
-    const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    const base64Json = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+    const rawJson = this.normalizeOptionalEnv(
+      process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+    );
+    const base64Json = this.normalizeOptionalEnv(
+      process.env.FIREBASE_SERVICE_ACCOUNT_BASE64,
+    );
 
     if (!rawJson && !base64Json) {
       this.logger.warn(
@@ -1128,6 +1132,22 @@ export class NotificationsService {
       this.logger.error(`FCM initialization failed: ${message}`);
       this.messaging = null;
     }
+  }
+
+  private normalizeOptionalEnv(value: string | undefined): string | null {
+    if (!value) return null;
+
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return null;
+
+    const startsWithQuote = trimmed.startsWith('"') || trimmed.startsWith("'");
+    const endsWithQuote = trimmed.endsWith('"') || trimmed.endsWith("'");
+    if (startsWithQuote && endsWithQuote && trimmed.length >= 2) {
+      const unwrapped = trimmed.slice(1, -1).trim();
+      return unwrapped.length === 0 ? null : unwrapped;
+    }
+
+    return trimmed;
   }
 
   private formatAmount(amount: number): string {

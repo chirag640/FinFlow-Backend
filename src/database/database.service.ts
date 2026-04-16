@@ -1,26 +1,26 @@
 import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
+    Injectable,
+    Logger,
+    OnModuleDestroy,
+    OnModuleInit,
 } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { Collection, Db, MongoClient, MongoClientOptions } from "mongodb";
 import {
-  BudgetDoc,
-  EmailOutboxDoc,
-  ExpenseDoc,
-  GoalDoc,
-  GroupDoc,
-  GroupExpenseDoc,
-  GroupMemberDoc,
-  GroupSettlementAuditDoc,
-  NotificationEventDoc,
-  PushDeviceDoc,
-  RefreshTokenDoc,
-  SuggestionInteractionDoc,
-  SyncPushIdempotencyDoc,
-  UserDoc,
+    BudgetDoc,
+    EmailOutboxDoc,
+    ExpenseDoc,
+    GoalDoc,
+    GroupDoc,
+    GroupExpenseDoc,
+    GroupMemberDoc,
+    GroupSettlementAuditDoc,
+    NotificationEventDoc,
+    PushDeviceDoc,
+    RefreshTokenDoc,
+    SuggestionInteractionDoc,
+    SyncPushIdempotencyDoc,
+    UserDoc,
 } from "./database.types";
 
 export { randomUUID };
@@ -33,7 +33,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     const url =
-      process.env.DATABASE_URL ?? "mongodb://localhost:27017/finflow_db";
+      this.normalizeEnvValue(process.env.DATABASE_URL) ??
+      "mongodb://localhost:27017/finflow_db";
 
     // Strip DB name from URL for MongoClient, then select it
     const opts: MongoClientOptions = {};
@@ -46,6 +47,22 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.log(`Connected to MongoDB: ${dbName}`);
     await this._ensureIndexes();
+  }
+
+  private normalizeEnvValue(value: string | undefined): string | undefined {
+    if (!value) return value;
+
+    const trimmed = value.trim();
+    if (trimmed.length >= 2) {
+      const startsWithQuote =
+        trimmed.startsWith('"') || trimmed.startsWith("'");
+      const endsWithQuote = trimmed.endsWith('"') || trimmed.endsWith("'");
+      if (startsWithQuote && endsWithQuote) {
+        return trimmed.slice(1, -1).trim();
+      }
+    }
+
+    return trimmed;
   }
 
   async onModuleDestroy() {

@@ -11,7 +11,7 @@
  * Env: ENCRYPTION_KEY — 64 hex characters (32 bytes)
  * Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
  */
-import { Injectable, OnModuleInit, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import * as crypto from "crypto";
 
 const ALGO = "aes-256-gcm";
@@ -22,14 +22,30 @@ export class EncryptionService implements OnModuleInit {
   private key!: Buffer;
 
   onModuleInit() {
-    const hex = process.env.ENCRYPTION_KEY;
-    if (!hex || hex.length !== 64) {
+    const hex = this.normalizeEnvValue(process.env.ENCRYPTION_KEY);
+    if (!hex || !/^[0-9a-fA-F]{64}$/.test(hex)) {
       throw new Error(
         "ENCRYPTION_KEY is missing or wrong length (must be 64 hex chars). " +
           "Generate one: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
       );
     }
     this.key = Buffer.from(hex, "hex");
+  }
+
+  private normalizeEnvValue(value: string | undefined): string | undefined {
+    if (!value) return value;
+
+    const trimmed = value.trim();
+    if (trimmed.length >= 2) {
+      const startsWithQuote =
+        trimmed.startsWith('"') || trimmed.startsWith("'");
+      const endsWithQuote = trimmed.endsWith('"') || trimmed.endsWith("'");
+      if (startsWithQuote && endsWithQuote) {
+        return trimmed.slice(1, -1).trim();
+      }
+    }
+
+    return trimmed;
   }
 
   encrypt(plaintext: string): string {
@@ -67,7 +83,10 @@ export class EncryptionService implements OnModuleInit {
   }
 
   // Helpers for applying a list of field names to an object
-  encryptFields<T extends Record<string, unknown>>(obj: T, fields: (keyof T)[]): T {
+  encryptFields<T extends Record<string, unknown>>(
+    obj: T,
+    fields: (keyof T)[],
+  ): T {
     const copy = { ...obj } as T;
     for (const f of fields) {
       if (copy[f] != null && typeof copy[f] === "string") {
@@ -77,7 +96,10 @@ export class EncryptionService implements OnModuleInit {
     return copy;
   }
 
-  decryptFields<T extends Record<string, unknown>>(obj: T, fields: (keyof T)[]): T {
+  decryptFields<T extends Record<string, unknown>>(
+    obj: T,
+    fields: (keyof T)[],
+  ): T {
     if (!obj) return obj;
     const copy = { ...obj } as T;
     for (const f of fields) {
