@@ -250,6 +250,7 @@ Important:
 
 - Do not set Vercel output directory to `dist` for this backend service.
 - Keep project root at `FinFlow-Backend`.
+- Set Node.js Version to `22.x` in Vercel Project Settings -> General.
 - Set all required backend environment variables in Vercel Project Settings.
 
 If you previously saw:
