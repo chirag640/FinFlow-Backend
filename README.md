@@ -244,7 +244,7 @@ Health check path for Render:
 ## Vercel Deployment Notes
 
 This repository now includes `vercel.json` that routes all incoming requests to
-`src/main.ts` as a Node serverless function.
+`api/index.ts` as a Node serverless function.
 
 Important:
 
@@ -257,8 +257,8 @@ If you previously saw:
 `No exports found in module "/var/task/src/main.js"`
 
 it means Vercel executed the file as a serverless function but did not find a
-handler export. `src/main.ts` now exports a default handler for Vercel while
-still supporting normal `npm run start:prod` hosting.
+handler export. `api/index.ts` now forwards to the default handler exported by
+`src/main.ts`, while still supporting normal `npm run start:prod` hosting.
 
 ## Useful Scripts
 
